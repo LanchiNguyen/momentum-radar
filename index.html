@@ -18,6 +18,7 @@
   .ctl{display:flex; align-items:center; gap:6px;}
   input[type=text]{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:6px; width:110px; text-transform:uppercase; font-weight:600;}
   input[type=number]{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:6px; width:56px;}
+  select{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; font-weight:600;}
   button, .tfbtn{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 12px; border-radius:6px; cursor:pointer; font-weight:600;}
   button:hover, .tfbtn:hover{border-color:var(--muted);}
   .tfbtn.active{background:var(--accent); color:#161006; border-color:var(--accent);}
@@ -70,6 +71,14 @@
     <button class="tfbtn active" data-tf="5m">5m</button>
     <button class="tfbtn" data-tf="15m">15m</button>
     <button class="tfbtn" data-tf="1h">1h</button>
+  </div>
+  <div class="ctl">
+    <select id="source" aria-label="data source">
+      <option value="">Auto source</option>
+      <option value="binance">Binance</option>
+      <option value="binanceus">Binance.US</option>
+      <option value="coinbase">Coinbase</option>
+    </select>
   </div>
   <div class="ctl"><button id="demo">Demo data</button></div>
   <span id="status">connecting…</span>
@@ -153,7 +162,7 @@
   </section>
 </main>
 
-<footer>Data: Binance public market data (no account needed) · alerts evaluate on closed bars only · educational tool, not financial advice.</footer>
+<footer>Data: Binance / Binance.US / Coinbase public market data, auto-selected (no account needed) · alerts evaluate on closed bars only · educational tool, not financial advice.</footer>
 
 <script>
 "use strict";
@@ -169,10 +178,55 @@ const S = {
   demoTimer: null,
   firedKeys: new Set(), // alert dedupe: type@barTime
   mouse: null,
+  source: null,         // the SOURCES entry that actually answered
+  resolvedSym: "",      // symbol in that source's own notation
+  forceSource: "",      // "" = auto-probe, otherwise pin to one source id
 };
-const TF_MS = { "1m":60e3, "5m":300e3, "15m":900e3, "1h":3600e3 };
-const REST = "https://api.binance.com/api/v3/klines";
-const WSS  = "wss://stream.binance.com:9443/ws";
+const TF_MS  = { "1m":60e3, "5m":300e3, "15m":900e3, "1h":3600e3 };
+const TF_SEC = { "1m":60, "5m":300, "15m":900, "1h":3600 };
+
+/* Data sources, tried in order until one answers. api.binance.com refuses US
+   traffic (HTTP 451, which reaches the browser as a bare "Failed to fetch"),
+   so Binance.US and Coinbase stand behind it. All three are public market
+   data — no account, no key. */
+const SOURCES = [
+  {
+    id:"binance", label:"Binance",
+    sym: s => s.toUpperCase().replace(/[^A-Z0-9]/g,""),
+    rest: (s,tf) => `https://api.binance.com/api/v3/klines?symbol=${s}&interval=${tf}&limit=500`,
+    parse: binanceKlines,
+    open: (s,tf) => new WebSocket(`wss://stream.binance.com:9443/ws/${s.toLowerCase()}@kline_${tf}`),
+    attach: binanceAttach,
+  },
+  {
+    id:"binanceus", label:"Binance.US",
+    sym: s => s.toUpperCase().replace(/[^A-Z0-9]/g,""),
+    rest: (s,tf) => `https://api.binance.us/api/v3/klines?symbol=${s}&interval=${tf}&limit=500`,
+    parse: binanceKlines,
+    open: (s,tf) => new WebSocket(`wss://stream.binance.us:9443/ws/${s.toLowerCase()}@kline_${tf}`),
+    attach: binanceAttach,
+  },
+  {
+    id:"coinbase", label:"Coinbase",
+    // BTCUSDT -> BTC-USD; anything already hyphenated passes through
+    sym: s => {
+      s = s.toUpperCase().trim();
+      if (s.includes("-")) return s;
+      const m = s.match(/^(.+?)(USDT|USDC|USD|EUR|GBP|BTC|ETH)$/);
+      if (!m) return s + "-USD";
+      return `${m[1]}-${(m[2]==="USDT"||m[2]==="USDC") ? "USD" : m[2]}`;
+    },
+    rest: (s,tf) => `https://api.exchange.coinbase.com/products/${s}/candles?granularity=${TF_SEC[tf]}`,
+    // Coinbase returns [time, low, high, open, close, volume], newest first
+    parse: rows => rows.slice().sort((a,b)=>a[0]-b[0])
+      .map(r => ({ t:r[0]*1000, o:+r[3], h:+r[2], l:+r[1], c:+r[4], v:+r[5], closed:true })),
+    open: () => new WebSocket("wss://ws-feed.exchange.coinbase.com"),
+    attach: coinbaseAttach,
+  },
+];
+function binanceKlines(rows){
+  return rows.map(r => ({ t:+r[0], o:+r[1], h:+r[2], l:+r[3], c:+r[4], v:+r[5], closed:true }));
+}
 
 const $ = id => document.getElementById(id);
 const statusEl = $("status");
@@ -378,22 +432,53 @@ function beep(dir){
 }
 
 /* ============================== data feed ============================== */
+/* Walk the source list until one returns candles. A blocked exchange throws a
+   TypeError with no status (CORS/geo), so failures are collected and only
+   reported if every source is exhausted. */
 async function loadHistory(){
-  setStatus("loading " + S.symbol + "…");
-  const url = `${REST}?symbol=${S.symbol}&interval=${S.tf}&limit=500`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("HTTP " + res.status + " — check the symbol (Binance spot pairs, e.g. BTCUSDT)");
-  const rows = await res.json();
-  S.candles = rows.map(r => ({ t:+r[0], o:+r[1], h:+r[2], l:+r[3], c:+r[4], v:+r[5], closed:true }));
-  if (S.candles.length) S.candles[S.candles.length-1].closed = false;
+  const tried = [];
+  const list = S.forceSource ? SOURCES.filter(s => s.id === S.forceSource) : SOURCES;
+  for (const src of list){
+    const sym = src.sym(S.symbol);
+    setStatus(`trying ${src.label} · ${sym}…`);
+    try{
+      const res = await fetch(src.rest(sym, S.tf), { cache:"no-store" });
+      if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}`); continue; }
+      const rows = await res.json();
+      if (!Array.isArray(rows) || rows.length < 40){ tried.push(`${src.label}: no data for ${sym}`); continue; }
+      const cs = src.parse(rows);
+      if (!cs.length || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: unreadable data`); continue; }
+      S.candles = cs;
+      S.candles[S.candles.length-1].closed = false;
+      S.source = src;
+      S.resolvedSym = sym;
+      return;
+    }catch(e){
+      tried.push(`${src.label}: ${e.name === "TypeError" ? "blocked/unreachable" : e.message}`);
+    }
+  }
+  throw new Error(tried.join(" · "));
 }
 
 function connectWS(){
   disconnectWS();
-  const stream = `${S.symbol.toLowerCase()}@kline_${S.tf}`;
-  const ws = new WebSocket(`${WSS}/${stream}`);
+  const src = S.source; if (!src) return;
+  let ws;
+  try { ws = src.open(S.resolvedSym, S.tf); } catch(e){ setStatus("stream unavailable — chart is static", "err"); return; }
   S.ws = ws;
-  ws.onopen = () => setStatus(`LIVE · ${S.symbol} ${S.tf}`, "live");
+  src.attach(ws, S.resolvedSym, S.tf);
+  ws.onclose = () => {
+    if (S.ws !== ws || S.demo) return;
+    // history is already on screen; say so rather than implying the chart is dead
+    setStatus(`${S.source.label} ${S.resolvedSym} · chart loaded, live stream reconnecting…`, "err");
+    setTimeout(()=>{ if (S.ws === ws) connectWS(); }, 3000);
+  };
+  ws.onerror = () => {};
+}
+
+/* Binance-style: the exchange sends fully-formed candles. */
+function binanceAttach(ws, sym, tf){
+  ws.onopen = () => setStatus(`LIVE · ${S.source.label} · ${sym} ${tf}`, "live");
   ws.onmessage = ev => {
     const k = JSON.parse(ev.data).k; if (!k) return;
     const bar = { t:k.t, o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+k.v, closed:k.x };
@@ -402,8 +487,41 @@ function connectWS(){
     else { if (last) last.closed = true; cs.push(bar); if (cs.length > 600) cs.shift(); }
     refresh(bar.closed);
   };
-  ws.onclose = () => { if (S.ws === ws && !S.demo){ setStatus("reconnecting…", "err"); setTimeout(()=>{ if(S.ws===ws) connectWS(); }, 3000); } };
-  ws.onerror = () => {};
+}
+
+/* Coinbase has no candle stream, so bars are aggregated from the trade ticker. */
+function coinbaseAttach(ws, sym, tf){
+  const ms = TF_MS[tf];
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type:"subscribe", product_ids:[sym], channels:["ticker"] }));
+    setStatus(`LIVE · Coinbase · ${sym} ${tf}`, "live");
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type !== "ticker" || m.price == null) return;
+    const px = +m.price, size = +(m.last_size || 0);
+    const stamp = m.time ? Date.parse(m.time) : Date.now();
+    if (!isFinite(px) || !isFinite(stamp)) return;
+    const cs = S.candles, last = cs[cs.length-1];
+    if (!last){
+      cs.push({ t:Math.floor(stamp/ms)*ms, o:px, h:px, l:px, c:px, v:size, closed:false });
+      refresh(false); return;
+    }
+    if (stamp < last.t) return;                          // late/out-of-order tick
+    // Bucket off the last bar's own timestamp rather than epoch alignment: the
+    // REST history sets the grid, and not every source aligns it to the epoch.
+    const steps = Math.floor((stamp - last.t)/ms);
+    if (steps === 0){
+      last.h = Math.max(last.h, px); last.l = Math.min(last.l, px);
+      last.c = px; last.v += size;
+      refresh(false);
+    } else {
+      last.closed = true; refresh(true);                 // close the old bar, fire alerts
+      cs.push({ t:last.t + steps*ms, o:px, h:px, l:px, c:px, v:size, closed:false });
+      if (cs.length > 600) cs.shift();
+      refresh(false);
+    }
+  };
 }
 function disconnectWS(){ if (S.ws){ const w=S.ws; S.ws=null; try{w.close();}catch(e){} } }
 
@@ -463,7 +581,17 @@ function draw(){
   const { w, h } = layout();
   const cs = S.candles, ind = S.ind;
   ctx.fillStyle = getCss("--bg"); ctx.fillRect(0,0,w,h);
-  if (!cs.length || !ind) return;
+  if (!cs.length || !ind){
+    $("legend").textContent = "";
+    ctx.textAlign = "center";
+    ctx.fillStyle = getCss("--muted"); ctx.font = "13px sans-serif";
+    ctx.fillText("No data loaded.", w/2, h/2 - 26);
+    ctx.fillText("Every exchange was unreachable from this network — the status bar says which and why.", w/2, h/2);
+    ctx.fillStyle = getCss("--accent");
+    ctx.fillText("Pick a different source above, or press “Demo data” to see how the tool works.", w/2, h/2 + 26);
+    ctx.textAlign = "left"; ctx.font = "11px sans-serif";
+    return;
+  }
 
   const i1 = cs.length-1, i0 = Math.max(0, i1 - S.barsVisible + 1);
   const n = i1 - i0 + 1;
@@ -673,8 +801,8 @@ async function start(){
     connectWS();
   }catch(e){
     if (S.demo) return; // user already switched to demo while the fetch was in flight
-    setStatus("Feed unavailable: " + e.message + " — try Demo data", "err");
-    draw();
+    setStatus("No feed — " + e.message, "err");
+    S.candles = []; draw();
   }
 }
 $("go").onclick = () => { S.symbol = $("symbol").value.trim().toUpperCase() || "BTCUSDT"; $("symbol").value = S.symbol; start(); };
@@ -686,6 +814,7 @@ document.querySelectorAll(".tfbtn").forEach(b => b.onclick = () => {
   S.demo ? startDemo() : start();
 });
 $("demo").onclick = () => startDemo();
+$("source").onchange = e => { S.forceSource = e.target.value; start(); };
 $("notifbtn").onclick = async () => {
   if (!("Notification" in window)) { $("notifbtn").textContent = "Notifications unsupported here"; return; }
   const p = await Notification.requestPermission();
