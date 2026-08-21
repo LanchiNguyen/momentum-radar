@@ -48,6 +48,43 @@
   .tag.info{background:rgba(232,163,61,.18); color:var(--accent);}
   .alert-item time{float:right; color:var(--muted); font-size:11px;}
   .empty{color:var(--muted); font-size:12px; text-align:center; padding:24px 10px;}
+  #read, #journal{grid-column:1 / -1; border-top:1px solid var(--border); padding:18px 18px 24px; background:var(--panel);}
+  #read h2, #journal h2{font-size:15px; margin-bottom:10px;}
+  .hint{font-size:12px; color:var(--muted); font-weight:400;}
+  .hint a{color:var(--muted);}
+  #readout .cards{margin-top:4px;}
+  .verdict{font-size:17px; font-weight:700; margin-bottom:6px;}
+  .verdict.long{color:var(--up);} .verdict.short{color:var(--down);} .verdict.none{color:var(--muted);}
+  .fline{display:flex; flex-wrap:wrap; gap:6px 8px; align-items:baseline; padding:3px 0; font-size:13px;}
+  .fline > span:not(.fmark):not(.fpct){flex:1 1 200px; min-width:0;}
+  .fline .fmark{flex:none; width:14px; text-align:center; font-weight:700;}
+  .fmark.pro{color:var(--up);} .fmark.con{color:var(--down);} .fmark.neu{color:var(--muted);}
+  .fline .fpct{flex-basis:100%; margin-left:22px; color:var(--muted); font-size:12px;}
+  #journal input[type=text]{text-transform:none; font-weight:400; width:auto;}
+  .bignum{font-size:15px; font-weight:700; color:var(--accent);}
+  .jgrid{display:grid; grid-template-columns:minmax(260px,380px) 1fr; gap:14px; align-items:start;}
+  @media (max-width:900px){ .jgrid{grid-template-columns:1fr;} }
+  #jform{background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px 16px;}
+  #jform h3{font-size:13px; color:var(--accent); margin-bottom:8px;}
+  .jrow{display:flex; align-items:center; gap:8px; margin:6px 0;}
+  .jrow label{width:86px; font-size:12px; color:var(--muted); flex:none;}
+  .jrow input, .jrow select{flex:1; background:var(--panel); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; min-width:0;}
+  #j-log{margin-top:8px; width:100%;}
+  #jstats{background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px 16px; font-size:13px;}
+  #jstats h3{font-size:13px; color:var(--accent); margin-bottom:8px;}
+  #jstats .srow{display:flex; justify-content:space-between; padding:2px 0;}
+  #jstats .srow b{font-variant-numeric:tabular-nums;}
+  #jlist{margin-top:14px; display:flex; flex-direction:column; gap:8px;}
+  .jtrade{background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:13px;}
+  .jtrade.open{border-color:rgba(232,163,61,.45);}
+  .jtrade .jhead{display:flex; gap:10px; align-items:baseline; flex-wrap:wrap;}
+  .jtrade .jhead time{color:var(--muted); font-size:11px; margin-left:auto;}
+  .jtrade .jbody{color:var(--muted); font-size:12px; margin-top:4px;}
+  .jtrade .pnl.win{color:var(--up); font-weight:700;} .jtrade .pnl.loss{color:var(--down); font-weight:700;}
+  .jclose{margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  .jclose input, .jclose select{background:var(--panel); border:1px solid var(--border); color:var(--text); padding:5px 8px; border-radius:6px;}
+  .jdel{color:var(--muted); font-size:11px; cursor:pointer; border:none; background:none; padding:2px 6px;}
+  .jdel:hover{color:var(--down);}
   #learn{grid-column:1 / -1; border-top:1px solid var(--border); padding:22px 18px 30px; background:var(--panel);}
   #learn h2{font-size:15px; margin-bottom:4px;}
   #learn > p{color:var(--muted); max-width:820px; margin-bottom:16px;}
@@ -112,6 +149,35 @@
     <h2>Signal log</h2>
     <div id="alertlog"><div class="empty">No signals yet. Alerts only fire when a bar closes with the setup confirmed — that's the point: you don't have to watch.</div></div>
   </aside>
+
+  <section id="read">
+    <h2>Read a spot <span class="hint">— click anywhere on the chart, or</span> <button id="readnow">Read the current bar</button></h2>
+    <div id="readout"><div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div></div>
+  </section>
+
+  <section id="journal">
+    <h2>Trade journal <span class="hint">— saved in this browser · <a href="#" id="jexport">export</a> · <a href="#" id="jimport">import</a></span></h2>
+    <div class="jgrid">
+      <form id="jform" autocomplete="off">
+        <h3>Log a trade</h3>
+        <div class="jrow"><label>Direction</label>
+          <select id="j-dir"><option value="long">Long / call</option><option value="short">Short / put</option></select></div>
+        <div class="jrow"><label>Entry price</label><input type="number" id="j-entry" step="any" placeholder="auto"></div>
+        <div class="jrow"><label>Target $</label><input type="number" id="j-target" step="any" placeholder="where you expect it to go"></div>
+        <div class="jrow"><label>Stop $</label><input type="number" id="j-stop" step="any" placeholder="where you're wrong"></div>
+        <div class="jrow"><label>Setup</label>
+          <select id="j-setup">
+            <option>Squeeze release</option><option>VWAP reclaim/loss</option><option>Breakout + volume</option>
+            <option>Support/resistance</option><option>Reversal call</option><option value="none">No real setup (be honest)</option>
+          </select></div>
+        <div class="jrow"><label>Thesis</label><input type="text" id="j-thesis" placeholder="why, in one sentence"></div>
+        <button type="submit" id="j-log">Log trade</button>
+        <p class="hint" id="j-snapnote">The tool's own read at entry is saved with the trade automatically.</p>
+      </form>
+      <div id="jstats"></div>
+    </div>
+    <div id="jlist"></div>
+  </section>
 
   <section id="learn">
     <h2>How to read this</h2>
@@ -371,7 +437,7 @@ function computeIndicators(cs){
   const rng = high.map((h,i)=> h-low[i]);
   const rngAvg = sma(rng, 20);
 
-  return { bbU, bbL, kcU, kcL, squeeze, mom, stochK, stochD, vwap, rvol, vAvg, rngAvg };
+  return { bbU, bbL, kcU, kcL, squeeze, mom, stochK, stochD, vwap, rvol, vAvg, rngAvg, atr };
 }
 
 function volumeProfile(cs, i0, i1, buckets){
@@ -622,7 +688,7 @@ async function pollOnce(){
 /* ---- demo feed: synthetic regime-switching tape so the tool works offline ---- */
 function startDemo(){
   stopDemo(); disconnectWS();
-  S.demo = true; S.firedKeys.clear();
+  S.demo = true; S.firedKeys.clear(); S.selBar = null;
   let px = 100, t = Date.now() - 500*TF_MS[S.tf], regime = 0, left = 60, drift = 0;
   const rand = (()=>{ let s=42; return ()=>{ s=(s*1664525+1013904223)>>>0; return s/2**32; }; })();
   const mk = () => {
@@ -695,6 +761,7 @@ function draw(){
   const plotW = w - axisW;
   const bw = plotW / n;
   const X = i => (i - i0 + 0.5) * bw;
+  S.view = { i0, i1, bw, plotW };   // for click hit-testing
 
   // panel geometry
   const pads = 6;
@@ -750,6 +817,15 @@ function draw(){
   line(ind.kcU, "rgba(120,140,175,0.45)", [4,4]); line(ind.kcL, "rgba(120,140,175,0.45)", [4,4]);
   line(ind.bbU, "rgba(53,200,232,0.5)");  line(ind.bbL, "rgba(53,200,232,0.5)");
   line(ind.vwap, getCss("--accent"), null, 1.7);
+
+  // clicked-bar marker (behind the candles)
+  if (S.selBar != null && S.selBar >= i0 && S.selBar <= i1){
+    ctx.fillStyle = "rgba(232,163,61,0.10)";
+    ctx.fillRect(X(S.selBar)-bw/2, 0, bw, h);
+    ctx.strokeStyle = getCss("--accent"); ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(X(S.selBar), 0); ctx.lineTo(X(S.selBar), h); ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // candles
   const cw = Math.max(1, Math.min(bw*0.7, 13));
@@ -883,13 +959,13 @@ function draw(){
   }
 }
 function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
-function fmtPx(p){ return isNaN(p) ? "—" : p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p.toPrecision(5); }
+function fmtPx(p){ return !isFinite(p) ? "—" : p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p === 0 ? "0.00" : p.toPrecision(5); }
 function pad2(x){ return String(x).padStart(2,"0"); }
 
 /* ============================== wiring ============================== */
 async function start(){
   stopDemo(); disconnectWS();
-  S.firedKeys.clear();
+  S.firedKeys.clear(); S.selBar = null;
   try{
     await loadHistory();
     if (S.demo) return; // user switched to demo while history was loading
@@ -988,6 +1064,358 @@ canvas.addEventListener("wheel", e => {
   S.barsVisible = Math.max(60, Math.min(400, Math.round(S.barsVisible * (e.deltaY > 0 ? 1.15 : 0.87))));
   draw();
 }, { passive:false });
+/* ============================== spot read ============================== */
+/* Everything quoted here is measured from the candles already on the chart —
+   no lookahead in the score (only bars up to i), and every percentage carries
+   its sample size. Small samples say so instead of pretending. */
+
+function esc(s){ return String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
+function median(a){ return a.length ? a[Math.floor(a.length/2)] : NaN; }
+
+function signature(i){
+  const ind = S.ind, cs = S.candles;
+  let rel = false;
+  if (!ind.squeeze[i]) for (let k=1;k<=3;k++) if (i-k >= 0 && ind.squeeze[i-k]){ rel = true; break; }
+  return [ cs[i].c > ind.vwap[i] ? "A" : "B",
+           ind.mom[i] >= 0 ? "U" : "D",
+           ind.squeeze[i] ? "S" : rel ? "R" : "O",
+           ind.rvol[i] >= 1.2 ? "H" : "L" ].join("");
+}
+
+function analyzeBar(i){
+  const cs = S.candles, ind = S.ind;
+  if (!cs || !ind || i < 45 || i >= cs.length) return null;
+  const c = cs[i], atr = ind.atr[i] || (c.h - c.l);
+  const factors = [];
+  let score = 0;
+  const add = (dir, w, name, note, pct) => { score += dir*w; factors.push({ dir, name, note, pct }); };
+
+  // fraction of history bars sharing a feature that then closed in that
+  // feature's direction 10 bars later — the honest version of "percentages"
+  const pctFor = (cond, dir) => {
+    let n = 0, hit = 0;
+    for (let j = 45; j <= cs.length - 12; j++){
+      if (j === i || !cond(j)) continue;
+      n++; if (dir * (cs[j+10].c - cs[j].c) > 0) hit++;
+    }
+    return n >= 10 ? { pct: Math.round(100*hit/n), n } : null;
+  };
+
+  const aboveV = c.c > ind.vwap[i];
+  add(aboveV ? 1 : -1, 2, "VWAP",
+    aboveV ? `above session VWAP ($${fmtPx(ind.vwap[i])}) — buyers in control`
+           : `below session VWAP ($${fmtPx(ind.vwap[i])}) — sellers in control`,
+    pctFor(j => (cs[j].c > ind.vwap[j]) === aboveV, aboveV ? 1 : -1));
+
+  const m = ind.mom[i], mUp = m >= 0, mRising = m >= (ind.mom[i-1] ?? m);
+  add(mUp ? 1 : -1, 2, "Momentum",
+    `${mUp ? "positive" : "negative"} and ${mRising ? "strengthening" : "fading"}`,
+    pctFor(j => !isNaN(ind.mom[j]) && (ind.mom[j] >= 0) === mUp, mUp ? 1 : -1));
+  if (mUp !== mRising) score += mUp ? -1 : 1;   // fading momentum discounts itself
+
+  let relAge = 0;
+  if (!ind.squeeze[i]) for (let k=1;k<=3;k++) if (ind.squeeze[i-k]){ relAge = k; break; }
+  if (ind.squeeze[i])
+    add(0, 0, "Squeeze", "ON — coiling. This is the no-trade zone: theta bleeds while price decides.");
+  else if (relAge)
+    add(mUp ? 1 : -1, 2, "Squeeze",
+      `released ${relAge} bar${relAge>1?"s":""} ago with ${mUp?"up":"down"} momentum — the classic trigger`,
+      pctFor(j => { if (ind.squeeze[j] || (ind.mom[j]>=0)!==mUp) return false;
+                    for (let k=1;k<=3;k++) if (ind.squeeze[j-k]) return true; return false; }, mUp ? 1 : -1));
+  else
+    add(0, 0, "Squeeze", "off, no recent release — no compression edge either way");
+
+  const rv = ind.rvol[i], cDir = c.c >= c.o ? 1 : -1;
+  if (rv >= 1.5)
+    add(cDir, 1, "Volume", `RVOL ${rv.toFixed(1)} — real participation behind this ${cDir>0?"up":"down"} bar`,
+      pctFor(j => ind.rvol[j] >= 1.5 && (cs[j].c >= cs[j].o) === (cDir>0), cDir));
+  else if (rv < 0.8)
+    add(0, 0, "Volume", `RVOL ${rv.toFixed(1)} — dead tape; breakouts here are the fakeouts that trap you`);
+  else
+    add(0, 0, "Volume", `RVOL ${rv.toFixed(1)} — unremarkable`);
+
+  const k = ind.stochK[i], d = ind.stochD[i];
+  if (!isNaN(k) && k < 25 && k > d) add(1, 1, "Stoch RSI", `hooking up from oversold (${k.toFixed(0)})`);
+  else if (!isNaN(k) && k > 75 && k < d) add(-1, 1, "Stoch RSI", `rolling over from overbought (${k.toFixed(0)})`);
+  else add(0, 0, "Stoch RSI", isNaN(k) ? "warming up" : `${k.toFixed(0)} — no timing signal`);
+
+  const vp = volumeProfile(cs, Math.max(0, i-150), i, 40);
+  let lvl = null;
+  if (vp){
+    lvl = { poc: vp.lo + (vp.poc+0.5)*vp.bh, vah: vp.lo + (vp.vaHi+1)*vp.bh, val: vp.lo + vp.vaLo*vp.bh };
+    if (c.c > lvl.vah) add(1, 1, "Profile", `above the value area (top $${fmtPx(lvl.vah)}) — thin air above, room to run`);
+    else if (c.c < lvl.val) add(-1, 1, "Profile", `below the value area (bottom $${fmtPx(lvl.val)}) — breakdown territory`);
+    else add(0, 0, "Profile", `inside value (POC $${fmtPx(lvl.poc)}) — balance; expect rotation back to $${fmtPx(lvl.poc)}, not a trend`);
+  }
+
+  const lean = ind.squeeze[i] ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
+  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], lvl };
+}
+
+/* bars that looked the same (same signature): did ±1 ATR hit favorably first
+   within 20 bars? Ambiguous same-bar hits count as losses — conservative. */
+function matchedHistory(i){
+  const cs = S.candles, ind = S.ind, sig = signature(i);
+  const dir = ind.mom[i] >= 0 ? 1 : -1;
+  const fav = [], adv = [];
+  let n = 0, wins = 0;
+  for (let j = 45; j <= cs.length - 22; j++){
+    if (j === i || signature(j) !== sig) continue;
+    const a = ind.atr[j]; if (!a) continue;
+    const e = cs[j].c;
+    let win = null, maxF = 0, maxA = 0;
+    for (let k = j+1; k <= j+20; k++){
+      const f = dir > 0 ? cs[k].h - e : e - cs[k].l;
+      const g = dir > 0 ? e - cs[k].l : cs[k].h - e;
+      maxF = Math.max(maxF, f); maxA = Math.max(maxA, g);
+      if (win === null){
+        if (g >= a) win = false;            // stop side first (or same bar) = loss
+        else if (f >= a) win = true;
+      }
+    }
+    n++; if (win === true) wins++;
+    fav.push(maxF); adv.push(maxA);
+  }
+  fav.sort((x,y)=>x-y); adv.sort((x,y)=>x-y);
+  return { n, wins, dir, medFav: median(fav), medAdv: median(adv) };
+}
+
+function renderRead(i){
+  const out = $("readout");
+  const a = analyzeBar(i);
+  if (!a){ out.innerHTML = '<div class="empty">Not enough history at this bar to score it (the first ~45 bars are indicator warm-up).</div>'; return; }
+  const cs = S.candles;
+  const dirWord = a.lean > 0 ? "UP" : a.lean < 0 ? "DOWN" : "";
+  const conviction = Math.abs(a.score) >= 5 ? "strong" : "modest";
+  const hist = a.lean !== 0 ? matchedHistory(i) : null;
+
+  let verdictCls = "none", verdictTxt, verdictSub;
+  if (a.squeezeOn){
+    verdictTxt = "NO TRADE — squeeze is ON";
+    verdictSub = "The chart is coiling. Entering here is paying theta to wait. The alert will fire when it releases.";
+  } else if (a.lean === 0){
+    verdictTxt = "NO EDGE HERE";
+    verdictSub = "The evidence is split — this is exactly the spot where you'd normally enter on hope. Skip it.";
+  } else {
+    verdictCls = a.lean > 0 ? "long" : "short";
+    verdictTxt = `LEANS ${dirWord} (${conviction}, score ${a.score > 0 ? "+" : ""}${a.score})`;
+    verdictSub = "A lean from confluence — not a prediction. The percentages below say how this exact look has resolved on this chart.";
+  }
+
+  let oddsHtml = "";
+  if (hist){
+    if (hist.n >= 8){
+      const pct = Math.round(100*hist.wins/hist.n);
+      oddsHtml = `<div class="fline"><span class="bignum">${pct}%</span>&nbsp;of the ${hist.n} bars on this chart that looked like this moved <b>$${fmtPx(hist.medFav)}</b>* ${dirWord.toLowerCase()} (1 ATR = $${fmtPx(a.atr)}) before moving 1 ATR against.</div>
+      <div class="fline hint">*median best move within 20 bars; median worst drawdown was $${fmtPx(hist.medAdv)}. Sample: this chart's loaded history only.</div>`;
+    } else {
+      oddsHtml = `<div class="fline hint">Only ${hist.n} bars in the loaded history looked like this — too few to quote a percentage honestly. Treat this as a lean, not odds.</div>`;
+    }
+  }
+
+  let lvlHtml = "";
+  if (a.lvl){
+    const rows = [["Value area top", a.lvl.vah, "resistance / breakout line"],
+                  ["POC (magnet)",  a.lvl.poc, "price gravitates here in chop"],
+                  ["Value area bottom", a.lvl.val, "support / breakdown line"]]
+      .map(([nm,p,why]) => `<div class="fline"><span>${nm}</span><b>&nbsp;$${fmtPx(p)}</b><span class="fpct">${p >= a.c.c ? "+" : "−"}$${fmtPx(Math.abs(p-a.c.c))} away · ${why}</span></div>`).join("");
+    lvlHtml = `<div class="card"><h3>Levels that matter ($)</h3>${rows}
+      <div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). A target much beyond the next level needs the level to break first.</div></div>`;
+  }
+
+  const fHtml = a.factors.map(f => {
+    const mark = f.dir > 0 ? "▲" : f.dir < 0 ? "▼" : "•";
+    const cls  = f.dir > 0 ? "pro" : f.dir < 0 ? "con" : "neu";
+    const pct  = f.pct ? `<span class="fpct">${f.pct.pct}% of such bars closed ${f.dir>=0?"higher":"lower"} 10 bars on (n=${f.pct.n})</span>` : "";
+    return `<div class="fline"><span class="fmark ${cls}">${mark}</span><span><b>${f.name}:</b> ${f.note}</span>${pct}</div>`;
+  }).join("");
+
+  // clicking a historical bar reveals what actually happened — practice mode
+  let revealHtml = "";
+  if (i <= cs.length - 11){
+    let up = 0, dn = 0;
+    const end = Math.min(cs.length-1, i+20);
+    for (let k = i+1; k <= end; k++){ up = Math.max(up, cs[k].h - a.c.c); dn = Math.max(dn, a.c.c - cs[k].l); }
+    revealHtml = `<div class="card"><h3>What actually happened next</h3>
+      <div class="fline"><span>Within ${end-i} bars:</span><b>&nbsp;+$${fmtPx(up)} up&nbsp;</b> / <b>&nbsp;−$${fmtPx(dn)} down</b></div>
+      <div class="fline hint">Click bars in the past like this to test your read before risking money on the live edge.</div></div>`;
+  }
+
+  const d = new Date(a.c.t);
+  out.innerHTML = `<div class="cards">
+    <div class="card">
+      <div class="verdict ${verdictCls}">${verdictTxt}</div>
+      <div class="fline hint">${S.symbol} ${S.tf} · bar ${d.toUTCString().slice(5,22)} UTC · price $${fmtPx(a.c.c)}</div>
+      <div class="fline">${verdictSub}</div>
+      ${oddsHtml}
+      <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
+    </div>
+    <div class="card"><h3>The evidence, piece by piece</h3>${fHtml}</div>
+    ${lvlHtml}
+    ${revealHtml}
+  </div>`;
+  const btn = $("readlog");
+  if (btn) btn.onclick = () => {
+    $("j-dir").value = a.lean < 0 ? "short" : "long";
+    $("j-entry").value = fmtPx(a.c.c);
+    if (a.lvl){
+      $("j-target").value = +fmtPx(a.lean < 0 ? a.lvl.val : a.lvl.vah);
+      $("j-stop").value = +fmtPx(a.lean < 0 ? a.c.c + a.atr : a.c.c - a.atr);
+    }
+    $("journal").scrollIntoView({ behavior:"smooth" });
+    $("j-thesis").focus();
+  };
+}
+
+canvas.addEventListener("click", e => {
+  if (!S.view || !S.candles.length) return;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  if (x >= S.view.plotW) return;
+  const idx = Math.max(S.view.i0, Math.min(S.view.i1, S.view.i0 + Math.floor(x / S.view.bw)));
+  S.selBar = idx;
+  draw();
+  renderRead(idx);
+  $("read").scrollIntoView({ behavior:"smooth", block:"nearest" });
+});
+$("readnow").onclick = () => {
+  if (!S.candles.length) return;
+  let i = S.candles.length - 1; if (!S.candles[i].closed && i > 0) i--;
+  S.selBar = i; draw(); renderRead(i);
+};
+
+/* ============================== trade journal ============================== */
+const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered during squeeze/chop",
+  "fakeout — volume never confirmed", "right idea, too early (theta)", "moved my stop",
+  "took profit too early", "thesis just wrong", "news / external"];
+
+function jLoad(){ try { return JSON.parse(localStorage.getItem("mrjournal") || "[]"); } catch(e){ return []; } }
+function jSave(t){ try { localStorage.setItem("mrjournal", JSON.stringify(t)); } catch(e){} }
+
+$("jform").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!S.candles.length){ alert("Load a chart first — the journal snapshots the tool's read at entry."); return; }
+  let i = S.candles.length - 1; if (!S.candles[i].closed && i > 0) i--;
+  const a = analyzeBar(i);
+  const dir = $("j-dir").value;
+  const entry = parseFloat($("j-entry").value) || S.candles[S.candles.length-1].c;
+  const trade = {
+    id: Date.now(), openedAt: new Date().toISOString(), symbol: S.symbol, tf: S.tf,
+    dir, entry,
+    target: parseFloat($("j-target").value) || null,
+    stop: parseFloat($("j-stop").value) || null,
+    setup: $("j-setup").value, thesis: $("j-thesis").value.trim(),
+    snap: a ? { lean: a.lean, score: a.score, squeezeOn: a.squeezeOn,
+                rvol: +(S.ind.rvol[i] || 0).toFixed(2),
+                aboveVwap: S.candles[i].c > S.ind.vwap[i] } : null,
+    agree: a ? (a.squeezeOn ? false : a.lean !== 0 && ((dir === "long") === (a.lean > 0))) : null,
+    status: "open", exit: null, pnl: null, tag: null, notes: ""
+  };
+  const all = jLoad(); all.unshift(trade); jSave(all);
+  $("jform").reset(); $("j-entry").value = "";
+  jRender();
+});
+
+function jClose(id){
+  const all = jLoad(), t = all.find(x => x.id === id); if (!t) return;
+  const exit = parseFloat($("jc-exit-"+id).value);
+  const pnlOverride = parseFloat($("jc-pnl-"+id).value);
+  if (isNaN(exit) && isNaN(pnlOverride)){ alert("Enter an exit price or a P/L."); return; }
+  t.exit = isNaN(exit) ? null : exit;
+  t.pnl = !isNaN(pnlOverride) ? pnlOverride
+        : (t.dir === "long" ? exit - t.entry : t.entry - exit);
+  t.tag = $("jc-tag-"+id).value;
+  t.notes = $("jc-notes-"+id).value.trim();
+  t.status = "closed"; t.closedAt = new Date().toISOString();
+  jSave(all); jRender();
+}
+function jDelete(id){
+  if (!confirm("Delete this journal entry? This can't be undone.")) return;
+  jSave(jLoad().filter(x => x.id !== id)); jRender();
+}
+
+function jRender(){
+  const all = jLoad();
+  const list = $("jlist");
+  if (!all.length){
+    list.innerHTML = '<div class="empty">No trades yet. Every entry snapshots what the tool thought at that moment — the review below will show whether your losers were the trades taken against it.</div>';
+  } else {
+    list.innerHTML = all.map(t => {
+      const d = new Date(t.openedAt);
+      const snapTxt = t.snap
+        ? `tool said: ${t.snap.squeezeOn ? "squeeze ON (no-trade)" : t.snap.lean > 0 ? "leans up" : t.snap.lean < 0 ? "leans down" : "no edge"} (score ${t.snap.score >= 0 ? "+" : ""}${t.snap.score}, RVOL ${t.snap.rvol}, ${t.snap.aboveVwap ? "above" : "below"} VWAP) — you ${t.agree ? "agreed ✓" : "went against ✗"}`
+        : "no snapshot";
+      const head = `<div class="jhead">
+        <b>${esc(t.symbol)}</b> <span>${t.dir === "long" ? "▲ long" : "▼ short"}</span>
+        <span>in $${fmtPx(t.entry)}</span>
+        ${t.target ? `<span class="hint">target $${fmtPx(t.target)}</span>` : ""}
+        ${t.stop ? `<span class="hint">stop $${fmtPx(t.stop)}</span>` : ""}
+        ${t.status === "closed"
+          ? `<span class="pnl ${t.pnl >= 0 ? "win" : "loss"}">${t.pnl >= 0 ? "+" : ""}$${fmtPx(Math.abs(t.pnl))}${t.pnl < 0 ? " loss" : ""}</span><span class="hint">${esc(t.tag || "")}</span>`
+          : `<span class="tag info" style="align-self:center">open</span>`}
+        <time>${d.toLocaleString()}</time>
+        <button class="jdel" data-del="${t.id}" title="delete">✕</button></div>`;
+      const body = `<div class="jbody">${esc(t.setup)}${t.thesis ? " — “" + esc(t.thesis) + "”" : ""} · ${snapTxt}${t.notes ? "<br>post-mortem: " + esc(t.notes) : ""}</div>`;
+      const closer = t.status === "open" ? `<div class="jclose">
+          <input type="number" step="any" id="jc-exit-${t.id}" placeholder="exit price">
+          <input type="number" step="any" id="jc-pnl-${t.id}" placeholder="P/L $ (optional, e.g. premium)">
+          <select id="jc-tag-${t.id}">${FAIL_TAGS.map(x => `<option>${x}</option>`).join("")}</select>
+          <input type="text" id="jc-notes-${t.id}" placeholder="what happened / what went wrong" style="flex:1;min-width:160px">
+          <button type="button" data-close="${t.id}">Close trade</button>
+        </div>` : "";
+      return `<div class="jtrade ${t.status}">${head}${body}${closer}</div>`;
+    }).join("");
+    list.querySelectorAll("[data-close]").forEach(b => b.onclick = () => jClose(+b.dataset.close));
+    list.querySelectorAll("[data-del]").forEach(b => b.onclick = () => jDelete(+b.dataset.del));
+  }
+
+  const closed = all.filter(t => t.status === "closed" && t.pnl != null);
+  const st = $("jstats");
+  if (!closed.length){ st.innerHTML = "<h3>Your numbers</h3><div class='hint'>Stats appear once you close trades. The one to watch: win rate on trades that agreed with the tool vs. trades against it.</div>"; return; }
+  const wins = closed.filter(t => t.pnl > 0);
+  const agreeC = closed.filter(t => t.agree === true), againstC = closed.filter(t => t.agree === false);
+  const wr = g => g.length ? Math.round(100 * g.filter(t => t.pnl > 0).length / g.length) + "% of " + g.length : "—";
+  const avg = g => g.length ? (g.reduce((s,t) => s + t.pnl, 0) / g.length) : 0;
+  const tagCounts = {};
+  closed.filter(t => t.pnl <= 0 && t.tag && t.tag !== FAIL_TAGS[0]).forEach(t => tagCounts[t.tag] = (tagCounts[t.tag] || 0) + 1);
+  const topTag = Object.entries(tagCounts).sort((a,b) => b[1] - a[1])[0];
+  st.innerHTML = `<h3>Your numbers</h3>
+    <div class="srow"><span>Closed trades</span><b>${closed.length}</b></div>
+    <div class="srow"><span>Win rate</span><b>${Math.round(100*wins.length/closed.length)}%</b></div>
+    <div class="srow"><span>Avg win / avg loss</span><b>+$${fmtPx(avg(wins))} / −$${fmtPx(Math.abs(avg(closed.filter(t => t.pnl <= 0))))}</b></div>
+    <div class="srow"><span>Expectancy per trade</span><b>${avg(closed) >= 0 ? "+" : "−"}$${fmtPx(Math.abs(avg(closed)))}</b></div>
+    <div class="srow"><span>When you agreed with the tool</span><b>${wr(agreeC)}</b></div>
+    <div class="srow"><span>When you went against it</span><b>${wr(againstC)}</b></div>
+    ${topTag ? `<div class="srow"><span>Most common failure</span><b>${esc(topTag[0])} ×${topTag[1]}</b></div>` : ""}`;
+}
+
+$("jexport").onclick = e => {
+  e.preventDefault();
+  const blob = new Blob([JSON.stringify(jLoad(), null, 2)], { type:"application/json" });
+  const aEl = document.createElement("a");
+  aEl.href = URL.createObjectURL(blob);
+  aEl.download = "momentum-radar-journal.json";
+  aEl.click(); URL.revokeObjectURL(aEl.href);
+};
+$("jimport").onclick = e => {
+  e.preventDefault();
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "application/json";
+  inp.onchange = async () => {
+    try{
+      const txt = await inp.files[0].text();
+      const arr = JSON.parse(txt);
+      if (!Array.isArray(arr)) throw new Error("not a journal file");
+      const cur = jLoad(), ids = new Set(cur.map(t => t.id));
+      arr.forEach(t => { if (t && t.id && !ids.has(t.id)) cur.push(t); });
+      cur.sort((a,b) => b.id - a.id);
+      jSave(cur); jRender();
+    }catch(err){ alert("Couldn't import: " + err.message); }
+  };
+  inp.click();
+};
+jRender();
+
 window.addEventListener("resize", draw);
 
 // returning stock traders land on their market, not the crypto default
