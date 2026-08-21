@@ -17,6 +17,9 @@
   header h1 .dot{color:var(--accent);}
   .ctl{display:flex; align-items:center; gap:6px;}
   input[type=text]{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:6px; width:110px; text-transform:uppercase; font-weight:600;}
+  input[type=password]{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 10px; border-radius:6px; width:130px;}
+  #keylink{color:var(--muted); font-size:12px; text-decoration:none; border-bottom:1px dotted var(--muted);}
+  #keylink:hover{color:var(--accent); border-color:var(--accent);}
   input[type=number]{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:6px; width:56px;}
   select{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; font-weight:600;}
   button, .tfbtn{background:var(--bg); border:1px solid var(--border); color:var(--text); padding:6px 12px; border-radius:6px; cursor:pointer; font-weight:600;}
@@ -75,10 +78,16 @@
   <div class="ctl">
     <select id="source" aria-label="data source">
       <option value="">Auto source</option>
+      <option value="twelvedata">Twelve Data (stocks)</option>
       <option value="binance">Binance</option>
       <option value="binanceus">Binance.US</option>
       <option value="coinbase">Coinbase</option>
     </select>
+  </div>
+  <div class="ctl">
+    <input id="tdkey" type="password" placeholder="stock API key" spellcheck="false"
+           title="Free key from twelvedata.com — needed for stock symbols like SPY. Stored only in this browser.">
+    <a id="keylink" href="https://twelvedata.com/register" target="_blank" rel="noopener" title="Get a free key (email signup, no card)">get key</a>
   </div>
   <div class="ctl"><button id="demo">Demo data</button><button id="diag">Diagnose</button></div>
   <span id="status">connecting…</span>
@@ -162,7 +171,7 @@
   </section>
 </main>
 
-<footer>Data: Binance / Binance.US / Coinbase public market data, auto-selected (no account needed) · alerts evaluate on closed bars only · educational tool, not financial advice.</footer>
+<footer>Data: US stocks/ETFs via Twelve Data (free key), crypto via Binance / Binance.US / Coinbase (keyless) — auto-selected per symbol · alerts evaluate on closed bars only · educational tool, not financial advice.</footer>
 
 <script>
 "use strict";
@@ -181,15 +190,38 @@ const S = {
   source: null,         // the SOURCES entry that actually answered
   resolvedSym: "",      // symbol in that source's own notation
   forceSource: "",      // "" = auto-probe, otherwise pin to one source id
+  pollTimer: null,      // live updates for sources with no stream
 };
 const TF_MS  = { "1m":60e3, "5m":300e3, "15m":900e3, "1h":3600e3 };
 const TF_SEC = { "1m":60, "5m":300, "15m":900, "1h":3600 };
+const TF_TD  = { "1m":"1min", "5m":"5min", "15m":"15min", "1h":"1h" };
+
+/* The stock feed needs a key (there is no keyless stock API). It lives only in
+   this browser's localStorage — it never leaves the machine except in requests
+   to Twelve Data itself. */
+function getTdKey(){ try { return localStorage.getItem("tdkey") || ""; } catch(e){ return ""; } }
+function setTdKey(k){ try { localStorage.setItem("tdkey", k); } catch(e){} }
 
 /* Data sources, tried in order until one answers. api.binance.com refuses US
    traffic (HTTP 451, which reaches the browser as a bare "Failed to fetch"),
-   so Binance.US and Coinbase stand behind it. All three are public market
-   data — no account, no key. */
+   so Binance.US and Coinbase stand behind it. The crypto sources are public
+   data with no key; Twelve Data covers US stocks/ETFs with a free key. */
 const SOURCES = [
+  {
+    id:"twelvedata", label:"Twelve Data (stocks)", needsKey:true, poll:true,
+    sym: s => s.toUpperCase().trim(),
+    rest: (s,tf) => `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(s)}` +
+      `&interval=${TF_TD[tf]}&outputsize=500&timezone=UTC&apikey=${encodeURIComponent(getTdKey())}`,
+    // {values:[{datetime,open,high,low,close,volume},...]} newest first; errors
+    // arrive as HTTP 200 with {status:"error",message}
+    parse: j => {
+      if (!j || j.status === "error") throw new Error((j && j.message) || "unexpected data");
+      if (!Array.isArray(j.values)) throw new Error("no candles in response");
+      return j.values.slice().reverse().map(v => ({
+        t: Date.parse(v.datetime.replace(" ","T") + "Z"),
+        o:+v.open, h:+v.high, l:+v.low, c:+v.close, v:+(v.volume || 0), closed:true }));
+    },
+  },
   {
     id:"binance", label:"Binance",
     sym: s => s.toUpperCase().replace(/[^A-Z0-9]/g,""),
@@ -218,13 +250,17 @@ const SOURCES = [
     },
     rest: (s,tf) => `https://api.exchange.coinbase.com/products/${s}/candles?granularity=${TF_SEC[tf]}`,
     // Coinbase returns [time, low, high, open, close, volume], newest first
-    parse: rows => rows.slice().sort((a,b)=>a[0]-b[0])
-      .map(r => ({ t:r[0]*1000, o:+r[3], h:+r[2], l:+r[1], c:+r[4], v:+r[5], closed:true })),
+    parse: rows => {
+      if (!Array.isArray(rows)) throw new Error((rows && rows.message) || "unexpected data");
+      return rows.slice().sort((a,b)=>a[0]-b[0])
+        .map(r => ({ t:r[0]*1000, o:+r[3], h:+r[2], l:+r[1], c:+r[4], v:+r[5], closed:true }));
+    },
     open: () => new WebSocket("wss://ws-feed.exchange.coinbase.com"),
     attach: coinbaseAttach,
   },
 ];
 function binanceKlines(rows){
+  if (!Array.isArray(rows)) throw new Error((rows && rows.msg) || "unexpected data");
   return rows.map(r => ({ t:+r[0], o:+r[1], h:+r[2], l:+r[3], c:+r[4], v:+r[5], closed:true }));
 }
 
@@ -435,19 +471,38 @@ function beep(dir){
 /* Walk the source list until one returns candles. A blocked exchange throws a
    TypeError with no status (CORS/geo), so failures are collected and only
    reported if every source is exhausted. */
+function looksCrypto(s){
+  s = s.toUpperCase().trim();
+  return /(USDT|USDC)$/.test(s) || s.includes("-") ||
+         /^(BTC|ETH|SOL|XRP|DOGE|ADA|LTC|BNB|AVAX|LINK)(USD)?$/.test(s);
+}
+
+/* Which sources to try, in what order. A plain ticker like SPY with a stock
+   key present goes to the stock feed first; crypto-looking symbols go to the
+   exchanges first. Without a key the stock feed is skipped entirely. */
+function sourceOrder(){
+  if (S.forceSource) return SOURCES.filter(s => s.id === S.forceSource);
+  // keep the keyless stock source in the list for stock-looking symbols, so the
+  // failure message can say "needs your free API key" instead of vanishing
+  const stocks = SOURCES.filter(s => s.needsKey && (getTdKey() || !looksCrypto(S.symbol)));
+  const crypto = SOURCES.filter(s => !s.needsKey);
+  return looksCrypto(S.symbol) ? [...crypto, ...stocks] : [...stocks, ...crypto];
+}
+
 async function loadHistory(){
   const tried = [];
-  const list = S.forceSource ? SOURCES.filter(s => s.id === S.forceSource) : SOURCES;
+  const list = sourceOrder();
+  if (!list.length) throw new Error("no source available — check the source dropdown / stock key");
   for (const src of list){
+    if (src.needsKey && !getTdKey()){ tried.push(`${src.label}: needs your free API key (paste it in the header)`); continue; }
     const sym = src.sym(S.symbol);
     setStatus(`trying ${src.label} · ${sym}…`);
     try{
       const res = await fetch(src.rest(sym, S.tf), { cache:"no-store" });
-      if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}`); continue; }
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length < 40){ tried.push(`${src.label}: no data for ${sym}`); continue; }
-      const cs = src.parse(rows);
-      if (!cs.length || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: unreadable data`); continue; }
+      let body = null; try { body = await res.json(); } catch(e){}
+      if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
+      const cs = src.parse(body);
+      if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough data for ${sym}`); continue; }
       S.candles = cs;
       S.candles[S.candles.length-1].closed = false;
       S.source = src;
@@ -463,6 +518,11 @@ async function loadHistory(){
 function connectWS(){
   disconnectWS();
   const src = S.source; if (!src) return;
+  if (src.poll){
+    setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} — refreshes every 20s`, "live");
+    S.pollTimer = setInterval(pollOnce, 20000);
+    return;
+  }
   let ws;
   try { ws = src.open(S.resolvedSym, S.tf); } catch(e){ setStatus("stream unavailable — chart is static", "err"); return; }
   S.ws = ws;
@@ -523,7 +583,41 @@ function coinbaseAttach(ws, sym, tf){
     }
   };
 }
-function disconnectWS(){ if (S.ws){ const w=S.ws; S.ws=null; try{w.close();}catch(e){} } }
+function disconnectWS(){
+  if (S.ws){ const w=S.ws; S.ws=null; try{w.close();}catch(e){} }
+  if (S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer = null; }
+}
+
+/* Polling refresh for sources with no stream: re-fetch the last few bars and
+   merge them onto the chart. Alerts still fire only when a bar rolls over. */
+async function pollOnce(){
+  const src = S.source;
+  if (!src || !src.poll || S.demo) return;
+  try{
+    const url = src.rest(S.resolvedSym, S.tf).replace("outputsize=500", "outputsize=5");
+    const res = await fetch(url, { cache:"no-store" });
+    if (!res.ok) return;                       // transient — keep the last good chart
+    const fresh = src.parse(await res.json());
+    if (!fresh.length) return;
+    const cs = S.candles;
+    let closedAny = false;
+    for (const b of fresh){
+      const last = cs[cs.length-1];
+      if (!last){ cs.push({ ...b, closed:false }); continue; }
+      if (b.t < last.t) continue;
+      if (b.t === last.t) cs[cs.length-1] = { ...b, closed:false };
+      else { last.closed = true; closedAny = true; cs.push({ ...b, closed:false }); if (cs.length > 600) cs.shift(); }
+    }
+    refresh(closedAny);
+    const age = Date.now() - cs[cs.length-1].t;
+    if (age > 3*TF_MS[S.tf] + 60e3){
+      const d = new Date(cs[cs.length-1].t);
+      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC (market closed?)`);
+    } else {
+      setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} — refreshes every 20s`, "live");
+    }
+  }catch(e){}                                  // transient — next tick retries
+}
 
 /* ---- demo feed: synthetic regime-switching tape so the tool works offline ---- */
 function startDemo(){
@@ -586,9 +680,11 @@ function draw(){
     ctx.textAlign = "center";
     ctx.fillStyle = getCss("--muted"); ctx.font = "13px sans-serif";
     ctx.fillText("No data loaded.", w/2, h/2 - 26);
-    ctx.fillText("Every exchange was unreachable from this network — the status bar says which and why.", w/2, h/2);
+    ctx.fillText("No source could serve this symbol — the status bar says which failed and why.", w/2, h/2);
     ctx.fillStyle = getCss("--accent");
-    ctx.fillText("Pick a different source above, or press “Demo data” to see how the tool works.", w/2, h/2 + 26);
+    ctx.fillText(getTdKey()
+      ? "Press “Diagnose” to test each source, or “Demo data” to see how the tool works."
+      : "Stocks (SPY, NVDA…) need the free API key — “get key” in the header, then paste it there.", w/2, h/2 + 26);
     ctx.textAlign = "left"; ctx.font = "11px sans-serif";
     return;
   }
@@ -820,6 +916,9 @@ $("demo").onclick = () => startDemo();
    separates them: it resolves opaque when the host is genuinely reachable and
    only a CORS/policy layer blocked the real read. */
 async function probeSource(src){
+  if (src.needsKey && !getTdKey())
+    return { host:"api.twelvedata.com", ok:false,
+             verdict:"no API key set — stocks need a free key from twelvedata.com (paste it in the header)" };
   const sym = src.sym(S.symbol);
   const url = src.rest(sym, S.tf);
   const host = (() => { try { return new URL(url).host; } catch(e){ return url; } })();
@@ -864,6 +963,13 @@ $("diag").onclick = async () => {
   log.appendChild(tip);
 };
 $("source").onchange = e => { S.forceSource = e.target.value; start(); };
+$("tdkey").value = getTdKey();
+$("tdkey").addEventListener("change", e => {
+  setTdKey(e.target.value.trim());
+  // a stock key strongly implies stock symbols; swap the untouched default
+  if (e.target.value.trim() && S.symbol === "BTCUSDT"){ S.symbol = "SPY"; $("symbol").value = "SPY"; }
+  start();
+});
 $("notifbtn").onclick = async () => {
   if (!("Notification" in window)) { $("notifbtn").textContent = "Notifications unsupported here"; return; }
   const p = await Notification.requestPermission();
@@ -884,6 +990,8 @@ canvas.addEventListener("wheel", e => {
 }, { passive:false });
 window.addEventListener("resize", draw);
 
+// returning stock traders land on their market, not the crypto default
+if (getTdKey()){ S.symbol = "SPY"; $("symbol").value = "SPY"; }
 start();
 </script>
 </body>

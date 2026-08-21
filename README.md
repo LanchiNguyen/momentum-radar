@@ -38,7 +38,17 @@ notifications and leave the tab in the background:
 It's one self-contained HTML file with no build step and no dependencies.
 Open the live URL, or download `index.html` and double-click it.
 
-Data comes from Binance's public market-data API — no account or key needed.
-"Demo data" runs a synthetic tape if you want to see it work without a feed.
+**US stocks / ETFs** (SPY, QQQ, NVDA...): needs a free API key from
+[twelvedata.com](https://twelvedata.com/register) — email signup, no card.
+Paste it in the header's key field; it is stored only in your browser's
+localStorage and sent nowhere except Twelve Data itself. Stock charts
+refresh by polling every 20 seconds (the free tier has no stream), and
+regular-hours bars only.
+
+**Crypto**: keyless. Binance, Binance.US and Coinbase are tried in order,
+because binance.com refuses US traffic; the source dropdown can pin one.
+
+"Demo data" runs a synthetic tape if you want to see it work without a feed,
+and "Diagnose" probes each source and names what is blocking it.
 
 Educational tool. Not financial advice.
