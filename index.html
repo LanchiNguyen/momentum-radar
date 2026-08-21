@@ -80,7 +80,7 @@
       <option value="coinbase">Coinbase</option>
     </select>
   </div>
-  <div class="ctl"><button id="demo">Demo data</button></div>
+  <div class="ctl"><button id="demo">Demo data</button><button id="diag">Diagnose</button></div>
   <span id="status">connecting…</span>
 </header>
 
@@ -814,6 +814,55 @@ document.querySelectorAll(".tfbtn").forEach(b => b.onclick = () => {
   S.demo ? startDemo() : start();
 });
 $("demo").onclick = () => startDemo();
+
+/* A plain fetch failure can't tell "the network never reached the host" from
+   "the host answered but the browser refused to hand it over". A no-cors probe
+   separates them: it resolves opaque when the host is genuinely reachable and
+   only a CORS/policy layer blocked the real read. */
+async function probeSource(src){
+  const sym = src.sym(S.symbol);
+  const url = src.rest(sym, S.tf);
+  const host = (() => { try { return new URL(url).host; } catch(e){ return url; } })();
+  try{
+    const res = await fetch(url, { cache:"no-store" });
+    if (res.ok) return { host, ok:true, verdict:`reachable — HTTP ${res.status}, data OK` };
+    return { host, ok:false, verdict:`HTTP ${res.status}` +
+      (res.status === 451 ? " — geo-blocked (this exchange refuses your country)" :
+       res.status === 404 ? ` — no such pair "${sym}" here` : "") };
+  }catch(e){
+    try{
+      await fetch(url, { mode:"no-cors", cache:"no-store" });
+      return { host, ok:false, verdict:"host IS reachable, but the browser blocked the response — an extension (ad/privacy/script blocker), Brave Shields, or a corporate proxy" };
+    }catch(e2){
+      return { host, ok:false, verdict:"no connection at all — DNS, firewall, VPN, or network-level block" };
+    }
+  }
+}
+
+$("diag").onclick = async () => {
+  const log = $("alertlog");
+  log.innerHTML = '<div class="empty">Probing each exchange…</div>';
+  const results = await Promise.all(SOURCES.map(probeSource));
+  const anyReachable = results.some(r => r.verdict.startsWith("host IS reachable"));
+  const allDead = results.every(r => r.verdict.startsWith("no connection"));
+  log.innerHTML = "";
+  results.forEach(r => {
+    const el = document.createElement("div");
+    el.className = "alert-item";
+    el.innerHTML = `<span class="tag ${r.ok ? "up" : "down"}">${r.ok ? "ok" : "fail"}</span>` +
+      `<div><b>${r.host}</b></div><div style="color:var(--muted);font-size:12px">${r.verdict}</div>`;
+    log.appendChild(el);
+  });
+  const tip = document.createElement("div");
+  tip.className = "empty";
+  tip.style.textAlign = "left";
+  tip.innerHTML = allDead
+    ? "Every host is unreachable at the network level. Most likely a VPN, a corporate/school network, or an ISP-level block on exchange domains. Try turning off a VPN, or open this page on your phone's cellular connection to confirm."
+    : anyReachable
+    ? "At least one host answered, so your network is fine — something in the browser is dropping the response. Disable ad/privacy blockers for this page (or Brave Shields) and reload."
+    : "Hosts answered with errors rather than being blocked — read the codes above; 451 means that exchange refuses your country, so pick a different one in the source dropdown.";
+  log.appendChild(tip);
+};
 $("source").onchange = e => { S.forceSource = e.target.value; start(); };
 $("notifbtn").onclick = async () => {
   if (!("Notification" in window)) { $("notifbtn").textContent = "Notifications unsupported here"; return; }
