@@ -1463,7 +1463,7 @@ function analyzeBar(i){
 
   const m = ind.mom[i], mUp = m >= 0, mRising = m >= (ind.mom[i-1] ?? m);
   add(mUp ? 1 : -1, 2, "Momentum",
-    `${mUp ? "positive" : "negative"} and ${mRising ? "strengthening" : "fading"}`,
+    `${mUp ? "positive" : "negative"} and ${mRising ? "strengthening" : "fading — a leftover reading, counted at half weight"}`,
     pctFor(j => !isNaN(ind.mom[j]) && (ind.mom[j] >= 0) === mUp, mUp ? 1 : -1));
   if (mUp !== mRising) score += mUp ? -1 : 1;   // fading momentum discounts itself
 
@@ -1537,8 +1537,23 @@ function analyzeBar(i){
     }
   }
 
-  const lean = ind.squeeze[i] ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
-  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], lvl };
+  // is price actually moving RIGHT NOW? VWAP side and the momentum histogram
+  // decay slowly, so after a move dies they keep voting its direction for a
+  // long time. A barcode (several bars pinned in a tiny box) makes any lean
+  // stale — detect it and refuse to lean until price leaves the box.
+  let stalled = null;
+  if (i >= 6 && atr > 0){
+    let hh = -Infinity, ll = Infinity;
+    for (let k = i-5; k <= i; k++){ hh = Math.max(hh, cs[k].h); ll = Math.min(ll, cs[k].l); }
+    if (hh - ll < 1.5*atr){
+      stalled = { top: hh, bot: ll };
+      factors.unshift({ dir:0, name:"Right now",
+        note:`BARCODING — the last 6 bars all fit inside ${((hh-ll)/atr).toFixed(1)} ATR ($${fmtPx(ll)}–$${fmtPx(hh)}). The directional factors below are leftovers from before this stall.` });
+    }
+  }
+
+  const lean = (ind.squeeze[i] || stalled) ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
+  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], stalled, lvl };
 }
 
 function resample(cs, f){
@@ -1594,6 +1609,9 @@ function renderRead(i){
   if (a.squeezeOn){
     verdictTxt = "NO TRADE — squeeze is ON";
     verdictSub = "The chart is coiling. Entering here is paying theta to wait. The alert will fire when it releases.";
+  } else if (a.stalled){
+    verdictTxt = "RANGE-BOUND — barcoding";
+    verdictSub = `Price is pinned in a $${fmtPx(a.stalled.top - a.stalled.bot)} box. Any lean here would be leftovers from the last move, so none is given. The trade is the break: above $${fmtPx(a.stalled.top)} or below $${fmtPx(a.stalled.bot)} on real volume — until then, nothing.`;
   } else if (a.lean === 0){
     verdictTxt = "NO EDGE HERE";
     verdictSub = "The evidence is split — this is exactly the spot where you'd normally enter on hope. Skip it.";
