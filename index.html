@@ -492,6 +492,28 @@ function binanceKlines(rows){
   return rows.map(r => ({ t:+r[0], o:+r[1], h:+r[2], l:+r[3], c:+r[4], v:+r[5], closed:true }));
 }
 
+/* Everything the user reads is New York time — the market's own clock. The
+   zone (not a fixed -5) so EST/EDT switches happen on their own; the label
+   below says which is in force. Bar timestamps stay epoch ms internally. */
+const ET_TZ = "America/New_York";
+const etFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, hour12:false,
+  year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit" });
+const etZoneFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, timeZoneName:"short" });
+function etParts(ms){
+  const p = {};
+  for (const x of etFmt.formatToParts(new Date(ms))) if (x.type !== "literal") p[x.type] = x.value;
+  if (p.hour === "24") p.hour = "00";            // some engines emit hour 24
+  return p;
+}
+function etHM(ms){ const p = etParts(ms); return `${p.hour}:${p.minute}`; }
+function etHMS(ms){ const p = etParts(ms); return `${p.hour}:${p.minute}:${p.second}`; }
+function etStamp(ms){ const p = etParts(ms); return `${+p.month}/${+p.day} ${p.hour}:${p.minute}`; }
+function etDayKey(ms){ const p = etParts(ms); return p.year + p.month + p.day; }
+function etZone(ms){
+  const x = etZoneFmt.formatToParts(new Date(ms == null ? Date.now() : ms)).find(y => y.type === "timeZoneName");
+  return x ? x.value : "ET";
+}
+
 const $ = id => document.getElementById(id);
 const statusEl = $("status");
 function setStatus(txt, cls){ statusEl.textContent = txt; statusEl.className = cls||""; }
@@ -580,11 +602,11 @@ function computeIndicators(cs){
   const stochK = sma(stoch.map(v=>isNaN(v)?0:v), 3).map((v,i)=> isNaN(stoch[i])?NaN:v);
   const stochD = sma(stochK.map(v=>isNaN(v)?0:v), 3).map((v,i)=> isNaN(stochK[i])?NaN:v);
 
-  // session VWAP (resets each UTC day)
+  // session VWAP (resets each ET trading day, so it matches the US session)
   const vwap = new Array(N).fill(NaN);
   let pv=0, vv=0, day=null;
   for (let i = 0; i < N; i++){
-    const d = Math.floor(cs[i].t/864e5);
+    const d = etDayKey(cs[i].t);
     if (d !== day){ day=d; pv=0; vv=0; }
     const tp = (high[i]+low[i]+close[i])/3;
     pv += tp*vol[i]; vv += vol[i];
@@ -693,7 +715,7 @@ function fireAlert(type, barIdx, dir, text){
   el.className = "alert-item";
   const now = new Date();
   el.innerHTML = `<span class="tag ${dir==="up"?"up":dir==="down"?"down":"info"}">${dir}</span>` +
-    `<time>${now.toTimeString().slice(0,5)}</time>` +
+    `<time>${etHM(now.getTime())}</time>` +
     `<div>${S.symbol} ${S.tf} — ${text}</div>`;
   log.prepend(el);
   while (log.children.length > 60) log.lastChild.remove();
@@ -926,7 +948,7 @@ async function pollOnce(){
     if (S.tickLive) return;                               // stream status wins
     if (age > 3*TF_MS[S.tf] + 60e3){
       const d = new Date(cs[cs.length-1].t);
-      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC (market closed, or the feed is delayed)`);
+      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(cs[cs.length-1].t)} ${etZone()} (market closed, or the feed is delayed)`);
     } else {
       const u = new Date();
       setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(cs[cs.length-1].c)} · updated ${pad2(u.getHours())}:${pad2(u.getMinutes())}:${pad2(u.getSeconds())}`, "live");
@@ -1107,7 +1129,7 @@ function draw(){
     // when does the cone end?
     const endD = new Date(cs[i1].t + F*TF_MS[S.tf]);
     ctx.fillStyle = getCss("--panellabel"); ctx.textAlign = "center";
-    ctx.fillText(`→ ${pad2(endD.getUTCHours())}:${pad2(endD.getUTCMinutes())} UTC`, Xf(F*0.55), Y(anchor + cone.qs[F][4]) - 6);
+    ctx.fillText(`→ ${etHM(cs[i1].t + F*TF_MS[S.tf])} ${etZone()}`, Xf(F*0.55), Y(anchor + cone.qs[F][4]) - 6);
     ctx.textAlign = "left";
   }
 
@@ -1260,8 +1282,7 @@ function draw(){
   const step = Math.max(1, Math.round(n/8));
   for (let i=i0;i<=i1;i+=step){
     const d = new Date(cs[i].t);
-    const lbl = (S.tf==="1h" || S.tf==="2h") ? `${d.getUTCMonth()+1}/${d.getUTCDate()} ${pad2(d.getUTCHours())}h`
-                            : `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+    const lbl = (S.tf==="1h" || S.tf==="2h") ? etStamp(cs[i].t) : etHM(cs[i].t);
     ctx.fillText(lbl, X(i), h-8);
   }
   ctx.textAlign = "left";
@@ -1277,7 +1298,7 @@ function draw(){
     const td = new Date(cs[i1].t + ahead*TF_MS[S.tf]);
     const q = cone.qs[ahead];
     lg.textContent =
-      `PROJECTION · by ${pad2(td.getUTCHours())}:${pad2(td.getUTCMinutes())} UTC (${ahead} bar${ahead>1?"s":""} ahead)\n` +
+      `PROJECTION · by ${etHM(td.getTime())} ${etZone()} (${ahead} bar${ahead>1?"s":""} ahead)\n` +
       `50% of ${cone.samples} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
       `80% ended ${fmtPx(anchor+q[0])} – ${fmtPx(anchor+q[4])}` +
       (cone.cond ? `\nmedian of ${cone.cond.n} bars matching this setup: ${fmtPx(anchor + cone.cond.medEnd*(ahead/cone.H))}` : "");
@@ -1289,7 +1310,7 @@ function draw(){
     ctx.setLineDash([]);
     const c = cs[mi], d = new Date(c.t);
     lg.textContent =
-      `${S.symbol} ${S.tf}   ${d.toUTCString().slice(5,22)} UTC\n` +
+      `${S.symbol} ${S.tf}   ${etStamp(c.t)} ${etZone()}\n` +
       `O ${fmtPx(c.o)}  H ${fmtPx(c.h)}  L ${fmtPx(c.l)}  C ${fmtPx(c.c)}\n` +
       `VWAP ${fmtPx(ind.vwap[mi])}   RVOL ${isNaN(ind.rvol[mi])?"—":ind.rvol[mi].toFixed(2)}   ` +
       `squeeze ${ind.squeeze[mi] ? "ON (wait)" : "off"}   stochK ${isNaN(ind.stochK[mi])?"—":ind.stochK[mi].toFixed(0)}`;
@@ -1537,8 +1558,8 @@ function analyzeBar(i){
   // day character: is today a trend day or a chop day? This decides whether
   // momentum entries or fade-the-extremes (RSI) entries work at all.
   {
-    const day = Math.floor(c.t/864e5);
-    let j0 = i; while (j0 > 0 && Math.floor(cs[j0-1].t/864e5) === day) j0--;
+    const day = etDayKey(c.t);
+    let j0 = i; while (j0 > 0 && etDayKey(cs[j0-1].t) === day) j0--;
     if (i - j0 >= 12){
       let crosses = 0;
       for (let j = j0+1; j <= i; j++)
@@ -1656,7 +1677,7 @@ function renderRead(i){
     if (i === li && S.cone){
       const cone = S.cone, anchor = cs[cs.length-1].c, q = cone.qs[cone.H];
       const endD = new Date(cs[cs.length-1].t + cone.H*TF_MS[S.tf]);
-      oddsHtml += `<div class="fline">By <b>&nbsp;${pad2(endD.getUTCHours())}:${pad2(endD.getUTCMinutes())} UTC</b>&nbsp;(${cone.H} bars): 50% of past paths ended <b>&nbsp;$${fmtPx(anchor+q[1])} – $${fmtPx(anchor+q[3])}</b>&nbsp;· 80% ended $${fmtPx(anchor+q[0])} – $${fmtPx(anchor+q[4])}${cone.cond ? ` · median of ${cone.cond.n} similar setups: <b>$${fmtPx(anchor+cone.cond.medEnd)}</b>` : ""}</div>
+      oddsHtml += `<div class="fline">By <b>&nbsp;${etHM(endD.getTime())} ${etZone()}</b>&nbsp;(${cone.H} bars): 50% of past paths ended <b>&nbsp;$${fmtPx(anchor+q[1])} – $${fmtPx(anchor+q[3])}</b>&nbsp;· 80% ended $${fmtPx(anchor+q[0])} – $${fmtPx(anchor+q[4])}${cone.cond ? ` · median of ${cone.cond.n} similar setups: <b>$${fmtPx(anchor+cone.cond.medEnd)}</b>` : ""}</div>
       <div class="fline hint">That range IS the lean, in dollars — hover the shaded cone on the chart to read it at any time step. A range, never a point: a single "it will be at $X" number would be guesswork.</div>`;
     }
   }
@@ -1719,7 +1740,7 @@ function renderRead(i){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
-      <div class="fline hint">${S.symbol} ${S.tf} · bar ${d.toUTCString().slice(5,22)} UTC · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)} ${etZone(a.c.t)} · price $${fmtPx(a.c.c)}</div>
       ${meterHtml}
       <div class="fline">${verdictSub}</div>
       ${oddsHtml}
@@ -1829,7 +1850,7 @@ function jRender(){
         ${t.status === "closed"
           ? `<span class="pnl ${t.pnl >= 0 ? "win" : "loss"}">${t.pnl >= 0 ? "+" : ""}$${fmtPx(Math.abs(t.pnl))}${t.pnl < 0 ? " loss" : ""}</span><span class="hint">${esc(t.tag || "")}</span>`
           : `<span class="tag info" style="align-self:center">open</span>`}
-        <time>${d.toLocaleString()}</time>
+        <time>${etStamp(d.getTime())} ${etZone(d.getTime())}</time>
         <button class="jdel" data-del="${t.id}" title="delete">✕</button></div>`;
       const body = `<div class="jbody">${esc(t.setup)}${t.thesis ? " — “" + esc(t.thesis) + "”" : ""} · ${snapTxt}${t.notes ? "<br>post-mortem: " + esc(t.notes) : ""}</div>`;
       const closer = t.status === "open" ? `<div class="jclose">
@@ -1912,7 +1933,7 @@ function tickClock(){
   const box = $("livebox"), el = $("clock");
   if (!box || !el) return;
   const now = new Date();
-  const wall = pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+  const wall = etHMS(now.getTime()) + " " + etZone();
   const bits = [];
   let stale = false;
   const nb = nextBarClose();
