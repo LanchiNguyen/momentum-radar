@@ -1455,6 +1455,20 @@ function analyzeBar(i){
     return n >= 10 ? { pct: Math.round(100*hit/n), n } : null;
   };
 
+  // what price is doing RIGHT NOW: net drift of the last 6 closes, in ATRs.
+  // Every other factor is context and moves slowly; this one is the tape.
+  const back = Math.min(6, i);
+  const net6 = c.c - cs[i-back].c;
+  let tapeDir = 0;
+  if (Math.abs(net6) >= 0.7*atr){
+    tapeDir = net6 > 0 ? 1 : -1;
+    add(tapeDir, 2, "Tape (now)",
+      `price has moved ${net6 > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${(Math.abs(net6)/atr).toFixed(1)} ATR) over the last ${back} bars — this is what's happening right now, whatever the context says`);
+  } else {
+    add(0, 0, "Tape (now)",
+      `net ${net6 >= 0 ? "+" : "−"}$${fmtPx(Math.abs(net6))} over the last ${back} bars (${(Math.abs(net6)/atr).toFixed(1)} ATR) — drifting, no real thrust either way`);
+  }
+
   const aboveV = c.c > ind.vwap[i];
   add(aboveV ? 1 : -1, 2, "VWAP",
     aboveV ? `above session VWAP ($${fmtPx(ind.vwap[i])}) — buyers in control`
@@ -1553,7 +1567,8 @@ function analyzeBar(i){
   }
 
   const lean = (ind.squeeze[i] || stalled) ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
-  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], stalled, lvl };
+  const tapeConflict = lean !== 0 && tapeDir !== 0 && tapeDir !== lean;
+  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], stalled, lvl, tapeDir, tapeConflict };
 }
 
 function resample(cs, f){
@@ -1619,6 +1634,9 @@ function renderRead(i){
     verdictCls = a.lean > 0 ? "long" : "short";
     verdictTxt = `LEANS ${dirWord} (${conviction}, score ${a.score > 0 ? "+" : ""}${a.score})`;
     verdictSub = "A lean from confluence — not a prediction. The percentages below say how this exact look has resolved on this chart.";
+    if (a.tapeConflict){
+      verdictSub = `<b style="color:var(--accent)">⚠ The tape is grinding ${a.tapeDir > 0 ? "UP" : "DOWN"} against this lean right now.</b> The lean is context; the tape is now. While price keeps moving against it, the lean is losing — don't fight a grinding tape, wait for it to actually stall or roll before acting on this.`;
+    }
   }
 
   let oddsHtml = "";
