@@ -22,6 +22,7 @@
     --volavg:rgba(232,211,61,0.7); --updim:rgba(38,166,154,0.35); --downdim:rgba(239,83,80,0.35);
     --selfill:rgba(232,163,61,0.10); --fvgup:rgba(38,166,154,0.12); --fvgdn:rgba(239,83,80,0.12);
     --obzone:rgba(239,83,80,0.10); --oszone:rgba(38,166,154,0.10); --midzone:rgba(127,127,127,0.05);
+    --coneouter:rgba(120,150,190,0.10); --coneinner:rgba(120,150,190,0.20);
   }
   body.light{
     --bg:#f6f7f9; --panel:#ffffff; --border:#d9dfe7; --text:#1d2733; --muted:#5b6a7a;
@@ -35,6 +36,7 @@
     --volavg:rgba(160,135,15,0.8); --updim:rgba(21,133,120,0.35); --downdim:rgba(207,64,61,0.35);
     --selfill:rgba(200,140,30,0.12); --fvgup:rgba(21,133,120,0.12); --fvgdn:rgba(207,64,61,0.12);
     --obzone:rgba(207,64,61,0.10); --oszone:rgba(21,133,120,0.10); --midzone:rgba(80,95,115,0.06);
+    --coneouter:rgba(60,95,150,0.10); --coneinner:rgba(60,95,150,0.20);
   }
   body.light #legend{text-shadow:none;}
   *{box-sizing:border-box; margin:0; padding:0;}
@@ -209,6 +211,7 @@
       <label><input type="checkbox" id="opt-vwap" checked> VWAP reclaim / loss on volume</label>
       <label><input type="checkbox" id="opt-sound" checked> Sound</label>
       <label><input type="checkbox" id="opt-fvg" checked> Show FVG zones on chart</label>
+      <label><input type="checkbox" id="opt-cone" checked> Projection cone (where price has historically gone)</label>
       <div class="thr">RVOL confirm ≥ <input type="number" id="rvolthr" value="1.5" min="1" max="5" step="0.1"></div>
       <button id="notifbtn">Enable browser notifications</button>
     </div>
@@ -366,6 +369,7 @@ const S = {
   tickDir: 0,           // direction of the last tick, for the price line
   lastDraw: 0,          // throttle for tick-driven redraws
   lastDataAt: 0,        // wall time of the last real data update (poll or tick)
+  cone: null,           // cached projection quantiles, rebuilt when a bar closes
 };
 const TF_MS = { "1m":60e3, "3m":180e3, "5m":300e3, "15m":900e3, "30m":18e5, "45m":27e5, "1h":36e5, "2h":72e5 };
 
@@ -944,8 +948,39 @@ function layout(){
 
 function refresh(barClosed){
   S.ind = computeIndicators(S.candles);
+  updateCone();
   if (barClosed) evaluateAlerts();
   draw();
+}
+
+/* The projection cone: the empirical distribution of "where was price h bars
+   later" over the loaded history. Offsets are cached and re-anchored to the
+   live price at draw time, so per-tick drawing stays cheap. The dashed path is
+   the median outcome of the bars matching the current setup, when there are
+   enough of them to mean anything. */
+function updateCone(){
+  const cs = S.candles;
+  if (!cs.length){ S.cone = null; return; }
+  let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
+  if (li < 80){ S.cone = null; return; }
+  if (S.cone && S.cone.t === cs[li].t && S.cone.len === cs.length) return;   // still current
+  const H = 20, qs = [null];
+  for (let h = 1; h <= H; h++){
+    const mv = [];
+    for (let j = 0; j + h <= li; j++) mv.push(cs[j+h].c - cs[j].c);
+    mv.sort((a,b)=>a-b);
+    const q = p => mv[Math.max(0, Math.min(mv.length-1, Math.floor(p*mv.length)))];
+    qs.push([q(0.10), q(0.25), q(0.50), q(0.75), q(0.90)]);
+  }
+  let cond = null, lean = 0;
+  const a = analyzeBar(li);
+  if (a){ lean = a.lean;
+    if (a.lean !== 0){
+      const mh = matchedHistory(li);
+      if (mh.n >= 8 && isFinite(mh.medEnd)) cond = { medEnd: mh.medEnd, n: mh.n };
+    }
+  }
+  S.cone = { t: cs[li].t, len: cs.length, H, qs, cond, lean, samples: li - 1 };
 }
 
 function draw(){
@@ -966,13 +1001,15 @@ function draw(){
     return;
   }
 
-  const i1 = cs.length-1, i0 = Math.max(0, i1 - S.barsVisible + 1);
+  const coneOn = S.cone && $("opt-cone") && $("opt-cone").checked;
+  const F = coneOn ? Math.min(S.cone.H, Math.floor(S.barsVisible/4)) : 0;   // future slots
+  const i1 = cs.length-1, i0 = Math.max(0, i1 - (S.barsVisible - F) + 1);
   const n = i1 - i0 + 1;
   const axisW = 64, profW = Math.min(120, w*0.14);
   const plotW = w - axisW;
-  const bw = plotW / n;
+  const bw = plotW / (n + F);
   const X = i => (i - i0 + 0.5) * bw;
-  S.view = { i0, i1, bw, plotW };   // for click hit-testing
+  S.view = { i0, i1, bw, plotW, F };   // for click hit-testing
 
   // panel geometry
   const pads = 6;
@@ -1040,6 +1077,38 @@ function draw(){
       ctx.fillText("FVG", Math.min(x0 + 3, plotW - 24), Y(g.top) + 9);
       ctx.font = "11px sans-serif";
     }
+  }
+
+  // projection cone off the live edge: bands = where price actually ended up
+  // h bars later across this chart's history (inner 50%, outer 80%)
+  if (coneOn && F > 0){
+    const anchor = cs[i1].c, cone = S.cone;
+    const Xf = h => (i1 - i0 + 0.5 + h) * bw;
+    const bandPoly = (qHi, qLo, color) => {
+      ctx.fillStyle = color; ctx.beginPath();
+      ctx.moveTo(Xf(0), Y(anchor));
+      for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.qs[h][qHi]));
+      for (let h = F; h >= 1; h--) ctx.lineTo(Xf(h), Y(anchor + cone.qs[h][qLo]));
+      ctx.closePath(); ctx.fill();
+    };
+    bandPoly(4, 0, getCss("--coneouter"));   // 10th–90th percentile
+    bandPoly(3, 1, getCss("--coneinner"));   // 25th–75th percentile
+    ctx.strokeStyle = getCss("--muted"); ctx.setLineDash([2,3]); ctx.beginPath();
+    ctx.moveTo(Xf(0), Y(anchor));
+    for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.qs[h][2]));
+    ctx.stroke(); ctx.setLineDash([]);
+    if (cone.cond){
+      ctx.strokeStyle = cone.cond.medEnd >= 0 ? getCss("--up") : getCss("--down");
+      ctx.setLineDash([5,3]); ctx.lineWidth = 1.6; ctx.beginPath();
+      ctx.moveTo(Xf(0), Y(anchor));
+      for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.cond.medEnd * (h/cone.H)));
+      ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+    }
+    // when does the cone end?
+    const endD = new Date(cs[i1].t + F*TF_MS[S.tf]);
+    ctx.fillStyle = getCss("--panellabel"); ctx.textAlign = "center";
+    ctx.fillText(`→ ${pad2(endD.getUTCHours())}:${pad2(endD.getUTCMinutes())} UTC`, Xf(F*0.55), Y(anchor + cone.qs[F][4]) - 6);
+    ctx.textAlign = "left";
   }
 
   // live last-price line, colored by the direction of the latest tick
@@ -1199,8 +1268,21 @@ function draw(){
 
   // crosshair + legend
   const lg = $("legend");
-  if (S.mouse && S.mouse.x < plotW){
-    const mi = Math.max(i0, Math.min(i1, i0 + Math.floor(S.mouse.x/bw)));
+  const mouseSlot = S.mouse ? i0 + Math.floor(S.mouse.x/bw) : -1;
+  if (S.mouse && S.mouse.x < plotW && coneOn && mouseSlot > i1 && mouseSlot <= i1 + F){
+    const ahead = mouseSlot - i1, cone = S.cone, anchor = cs[i1].c;
+    ctx.strokeStyle = getCss("--crosshair"); ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo((mouseSlot - i0 + 0.5)*bw, 0); ctx.lineTo((mouseSlot - i0 + 0.5)*bw, h); ctx.stroke();
+    ctx.setLineDash([]);
+    const td = new Date(cs[i1].t + ahead*TF_MS[S.tf]);
+    const q = cone.qs[ahead];
+    lg.textContent =
+      `PROJECTION · by ${pad2(td.getUTCHours())}:${pad2(td.getUTCMinutes())} UTC (${ahead} bar${ahead>1?"s":""} ahead)\n` +
+      `50% of ${cone.samples} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
+      `80% ended ${fmtPx(anchor+q[0])} – ${fmtPx(anchor+q[4])}` +
+      (cone.cond ? `\nmedian of ${cone.cond.n} bars matching this setup: ${fmtPx(anchor + cone.cond.medEnd*(ahead/cone.H))}` : "");
+  } else if (S.mouse && S.mouse.x < plotW){
+    const mi = Math.max(i0, Math.min(i1, mouseSlot));
     ctx.strokeStyle = getCss("--crosshair"); ctx.setLineDash([3,3]);
     ctx.beginPath(); ctx.moveTo(X(mi),0); ctx.lineTo(X(mi),h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0,S.mouse.y); ctx.lineTo(plotW,S.mouse.y); ctx.stroke();
@@ -1475,7 +1557,7 @@ function resample(cs, f){
 function matchedHistory(i){
   const cs = S.candles, ind = S.ind, sig = signature(i);
   const dir = ind.mom[i] >= 0 ? 1 : -1;
-  const fav = [], adv = [];
+  const fav = [], adv = [], ends = [];
   let n = 0, wins = 0;
   for (let j = 45; j <= cs.length - 22; j++){
     if (j === i || signature(j) !== sig) continue;
@@ -1493,9 +1575,10 @@ function matchedHistory(i){
     }
     n++; if (win === true) wins++;
     fav.push(maxF); adv.push(maxA);
+    ends.push(cs[Math.min(cs.length-1, j+20)].c - e);
   }
-  fav.sort((x,y)=>x-y); adv.sort((x,y)=>x-y);
-  return { n, wins, dir, medFav: median(fav), medAdv: median(adv) };
+  fav.sort((x,y)=>x-y); adv.sort((x,y)=>x-y); ends.sort((x,y)=>x-y);
+  return { n, wins, dir, medFav: median(fav), medAdv: median(adv), medEnd: median(ends) };
 }
 
 function renderRead(i){
@@ -1521,13 +1604,23 @@ function renderRead(i){
   }
 
   let oddsHtml = "";
+  // reading the live edge with the cone available: the lean, in dollars-by-when
+  {
+    let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
+    if (i === li && S.cone){
+      const cone = S.cone, anchor = cs[cs.length-1].c, q = cone.qs[cone.H];
+      const endD = new Date(cs[cs.length-1].t + cone.H*TF_MS[S.tf]);
+      oddsHtml += `<div class="fline">By <b>&nbsp;${pad2(endD.getUTCHours())}:${pad2(endD.getUTCMinutes())} UTC</b>&nbsp;(${cone.H} bars): 50% of past paths ended <b>&nbsp;$${fmtPx(anchor+q[1])} – $${fmtPx(anchor+q[3])}</b>&nbsp;· 80% ended $${fmtPx(anchor+q[0])} – $${fmtPx(anchor+q[4])}${cone.cond ? ` · median of ${cone.cond.n} similar setups: <b>$${fmtPx(anchor+cone.cond.medEnd)}</b>` : ""}</div>
+      <div class="fline hint">That range IS the lean, in dollars — hover the shaded cone on the chart to read it at any time step. A range, never a point: a single "it will be at $X" number would be guesswork.</div>`;
+    }
+  }
   if (hist){
     if (hist.n >= 8){
       const pct = Math.round(100*hist.wins/hist.n);
-      oddsHtml = `<div class="fline"><span class="bignum">${pct}%</span>&nbsp;of the ${hist.n} bars on this chart that looked like this moved <b>$${fmtPx(hist.medFav)}</b>* ${dirWord.toLowerCase()} (1 ATR = $${fmtPx(a.atr)}) before moving 1 ATR against.</div>
+      oddsHtml += `<div class="fline"><span class="bignum">${pct}%</span>&nbsp;of the ${hist.n} bars on this chart that looked like this moved <b>$${fmtPx(hist.medFav)}</b>* ${dirWord.toLowerCase()} (1 ATR = $${fmtPx(a.atr)}) before moving 1 ATR against.</div>
       <div class="fline hint">*median best move within 20 bars; median worst drawdown was $${fmtPx(hist.medAdv)}. Sample: this chart's loaded history only.</div>`;
     } else {
-      oddsHtml = `<div class="fline hint">Only ${hist.n} bars in the loaded history looked like this — too few to quote a percentage honestly. Treat this as a lean, not odds.</div>`;
+      oddsHtml += `<div class="fline hint">Only ${hist.n} bars in the loaded history looked like this — too few to quote a percentage honestly. Treat this as a lean, not odds.</div>`;
     }
   }
 
