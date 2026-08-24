@@ -42,8 +42,17 @@ Open the live URL, or download `index.html` and double-click it.
 [twelvedata.com](https://twelvedata.com/register) — email signup, no card.
 Paste it in the header's key field; it is stored only in your browser's
 localStorage and sent nowhere except Twelve Data itself. Stock charts
-refresh by polling every 20 seconds (the free tier has no stream), and
+refresh by polling every 12 seconds (the free tier has no stream), and
 regular-hours bars only.
+
+**Tick-by-tick (optional):** a second free key from
+[finnhub.io](https://finnhub.io/register) streams every US-stock trade over a
+websocket, so the forming candle ticks live like a real terminal. Paste it in
+the "tick key" field. The poll keeps running underneath as the authority on
+completed bars and volume.
+
+Both keys are also written into the page URL's hash — bookmark the page after
+entering them once and the bookmark carries them to any device.
 
 **Crypto**: keyless. Binance, Binance.US and Coinbase are tried in order,
 because binance.com refuses US traffic; the source dropdown can pin one.
