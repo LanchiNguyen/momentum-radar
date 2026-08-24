@@ -9,7 +9,29 @@
     --bg:#0d1117; --panel:#161b22; --border:#252c36; --text:#dbe4ee; --muted:#7d8896;
     --up:#26a69a; --down:#ef5350; --accent:#e8a33d; --cyan:#35c8e8; --blue:#3d6fe8;
     --yellow:#e8d33d; --red:#ef5350; --good:#4caf7d;
+    --grid:rgba(255,255,255,0.05); --crosshair:rgba(255,255,255,0.18);
+    --stochguide:rgba(255,255,255,0.10); --panellabel:rgba(255,255,255,0.35);
+    --kcfill:rgba(90,110,140,0.10); --kcline:rgba(120,140,175,0.45); --bbline:rgba(53,200,232,0.5);
+    --vpfill:rgba(120,150,190,0.13); --vpfill2:rgba(120,150,190,0.30);
+    --pocline:rgba(232,163,61,0.65); --poctxt:rgba(232,163,61,0.9);
+    --volavg:rgba(232,211,61,0.7); --updim:rgba(38,166,154,0.35); --downdim:rgba(239,83,80,0.35);
+    --selfill:rgba(232,163,61,0.10); --fvgup:rgba(38,166,154,0.12); --fvgdn:rgba(239,83,80,0.12);
+    --obzone:rgba(239,83,80,0.10); --oszone:rgba(38,166,154,0.10); --midzone:rgba(127,127,127,0.05);
   }
+  body.light{
+    --bg:#f6f7f9; --panel:#ffffff; --border:#d9dfe7; --text:#1d2733; --muted:#5b6a7a;
+    --up:#158578; --down:#cf403d; --accent:#b0781c; --cyan:#0d84a6; --blue:#2f5fd0;
+    --yellow:#a08a10; --red:#cf403d; --good:#1c8a5c;
+    --grid:rgba(20,40,70,0.08); --crosshair:rgba(20,40,70,0.30);
+    --stochguide:rgba(20,40,70,0.14); --panellabel:rgba(20,40,70,0.45);
+    --kcfill:rgba(90,110,150,0.09); --kcline:rgba(80,100,140,0.45); --bbline:rgba(10,130,170,0.55);
+    --vpfill:rgba(60,95,150,0.12); --vpfill2:rgba(60,95,150,0.26);
+    --pocline:rgba(190,120,20,0.75); --poctxt:rgba(160,100,10,0.95);
+    --volavg:rgba(160,135,15,0.8); --updim:rgba(21,133,120,0.35); --downdim:rgba(207,64,61,0.35);
+    --selfill:rgba(200,140,30,0.12); --fvgup:rgba(21,133,120,0.12); --fvgdn:rgba(207,64,61,0.12);
+    --obzone:rgba(207,64,61,0.10); --oszone:rgba(21,133,120,0.10); --midzone:rgba(80,95,115,0.06);
+  }
+  body.light #legend{text-shadow:none;}
   *{box-sizing:border-box; margin:0; padding:0;}
   body{background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
   header{display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--border); background:var(--panel);}
@@ -61,6 +83,25 @@
   .fmark.pro{color:var(--up);} .fmark.con{color:var(--down);} .fmark.neu{color:var(--muted);}
   .fline .fpct{flex-basis:100%; margin-left:22px; color:var(--muted); font-size:12px;}
   #journal input[type=text]{text-transform:none; font-weight:400; width:auto;}
+  .frow{display:grid; grid-template-columns:22px 1fr 170px; gap:2px 10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--border);}
+  .frow:last-of-type{border-bottom:none;}
+  .frow .fmark{text-align:center; font-weight:700; font-size:14px;}
+  .fname{font-weight:700; font-size:13px;}
+  .fnote{font-size:12px; color:var(--muted); line-height:1.35;}
+  .fedge{min-width:150px;}
+  .pbar{position:relative; height:12px; border-radius:6px; background:var(--border); overflow:hidden;}
+  .pbar.off{display:flex; align-items:center; justify-content:center;}
+  .pbar.off span{font-size:9px; color:var(--muted); letter-spacing:.5px; text-transform:uppercase;}
+  .pbar .tick{position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--muted); opacity:.8; z-index:2;}
+  .pbar .fill{position:absolute; top:0; bottom:0;}
+  .pbar .fill.pro{background:var(--up);} .pbar .fill.con{background:var(--down);}
+  .plabel{font-size:11px; margin-top:3px; font-weight:700;}
+  .plabel span{font-weight:400; color:var(--muted);}
+  .meter{position:relative; height:14px; border-radius:7px; margin:10px 0 2px;
+    background:linear-gradient(90deg, var(--down), var(--border) 40%, var(--border) 60%, var(--up));}
+  .meter .mtick{position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--muted);}
+  .meter .mneedle{position:absolute; top:-3px; bottom:-3px; width:4px; border-radius:2px; background:var(--text); box-shadow:0 0 0 2px var(--panel);}
+  .mlabels{display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-bottom:6px;}
   .bignum{font-size:15px; font-weight:700; color:var(--accent);}
   .jgrid{display:grid; grid-template-columns:minmax(260px,380px) 1fr; gap:14px; align-items:start;}
   @media (max-width:900px){ .jgrid{grid-template-columns:1fr;} }
@@ -103,7 +144,7 @@
 <header>
   <h1>MOMENTUM<span class="dot">·</span>RADAR</h1>
   <div class="ctl">
-    <input id="symbol" type="text" value="BTCUSDT" spellcheck="false" aria-label="symbol">
+    <input id="symbol" type="text" value="SPY" spellcheck="false" aria-label="symbol">
     <button id="go">Load</button>
   </div>
   <div class="ctl" id="tfs">
@@ -126,7 +167,7 @@
            title="Free key from twelvedata.com — needed for stock symbols like SPY. Stored only in this browser.">
     <a id="keylink" href="https://twelvedata.com/register" target="_blank" rel="noopener" title="Get a free key (email signup, no card)">get key</a>
   </div>
-  <div class="ctl"><button id="demo">Demo data</button><button id="diag">Diagnose</button></div>
+  <div class="ctl"><button id="demo">Demo data</button><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
   <span id="status">connecting…</span>
 </header>
 
@@ -143,6 +184,7 @@
       <label><input type="checkbox" id="opt-rvol" checked> Volume spike / range expansion</label>
       <label><input type="checkbox" id="opt-vwap" checked> VWAP reclaim / loss on volume</label>
       <label><input type="checkbox" id="opt-sound" checked> Sound</label>
+      <label><input type="checkbox" id="opt-fvg" checked> Show FVG zones on chart</label>
       <div class="thr">RVOL confirm ≥ <input type="number" id="rvolthr" value="1.5" min="1" max="5" step="0.1"></div>
       <button id="notifbtn">Enable browser notifications</button>
     </div>
@@ -223,6 +265,46 @@
         <p class="why">Stoch RSI alone can't tell consolidation from trend — that's why it's been trapping you. Squeeze + RVOL decide <i>if</i>; Stoch RSI and VWAP decide <i>where</i>.</p>
       </div>
       <div class="card">
+        <h3>ATR — the size of a normal move</h3>
+        <p>Average True Range = the average size of one bar, in dollars. That's all it is. It matters because it converts everything into "is this normal?":</p>
+        <ul>
+          <li><b>Stops:</b> a stop closer than ~1 ATR is inside random noise — you'll be stopped out by nothing. Put it beyond 1 ATR and behind a level.</li>
+          <li><b>Targets:</b> expecting a 4-ATR move by end of day is a lottery ticket; 1–2 ATR is a normal expectation.</li>
+          <li><b>Regime:</b> bars suddenly 2× ATR = the market woke up (that's the range-expansion alert).</li>
+        </ul>
+        <p class="why">You don't compute it — the tool does. You just need the idea: measure moves in ATRs, not in hopes.</p>
+      </div>
+      <div class="card">
+        <h3>FVG — fair value gaps (the shaded boxes)</h3>
+        <p>A 3-bar imbalance: price moved so fast that bar 1's range never overlaps bar 3's — the band in between traded almost no volume. The chart shows unfilled ones as shaded boxes.</p>
+        <ul>
+          <li>Price often comes back to "fill" the gap — a green (bullish) box below price is a magnet-then-support zone; a red box above is a magnet-then-resistance zone.</li>
+          <li>Best use: entries. Instead of chasing the breakout candle, wait for the pullback into the gap it left, with a stop below the box.</li>
+          <li>A gap that keeps rejecting price = strong; a gap sliced through without pause = the move behind it is dead.</li>
+        </ul>
+        <p class="why">FVGs and volume profile agree with each other: both mark where almost nothing traded — and price moves fast through those zones and reverses at their edges.</p>
+      </div>
+      <div class="card">
+        <h3>RSI: which days it works (and which it wrecks you)</h3>
+        <p>"Overbought" does not mean "about to fall." In a real trend RSI pins above 80 for hours — fading it is how RSI loses you money. The rule is regime first:</p>
+        <ul>
+          <li><b>Chop day</b> (price crossing VWAP over and over, going nowhere): RSI extremes work — fade 80 back toward VWAP/POC, buy 20.</li>
+          <li><b>Trend day</b> (one side of VWAP all day, efficient movement): do NOT fade. Use RSI dips to ~40–50 as pullback entries in the trend direction.</li>
+          <li><b>Timeframes:</b> the higher timeframe is the dog, yours is the tail. 45m pointing down + 5m bouncing = a bounce to short into, not a reversal. Trade the small frame only in the big frame's direction — the spot-read shows both.</li>
+        </ul>
+        <p class="why">The "Day character" row in the spot read makes this call for you — that's why some days "trading purely off RSI" works and other days it doesn't: it was never RSI, it was the day type.</p>
+      </div>
+      <div class="card">
+        <h3>Volume profile, the 60-second course</h3>
+        <p>The sideways histogram = how much traded at each <i>price</i> (not each time). Three things to read off it:</p>
+        <ul>
+          <li><b>POC</b> (orange dashes) — the single price with the most volume. It's where buyers and sellers agreed most, so in quiet conditions price gravitates back to it. Far from POC = stretched; at POC = fair, no edge.</li>
+          <li><b>Value area</b> (the darker 70% band) — "accepted" prices. Inside it: rotation, fade edges back to POC. Price <i>escaping</i> value on volume = a real repricing — that's a trend starting, don't fade it.</li>
+          <li><b>Thin shelves</b> (short bars) — prices nobody accepted. Price slips through them fast (good for targets beyond them) and finds nothing to stand on (bad places for stops).</li>
+        </ul>
+        <p class="why">Practical loop: before entering, ask "where's the next thick node?" — that's your realistic target — and "is a thin shelf in the way?" — that's your acceleration zone. After a big move up, price consolidating ON TOP of a fat node it just built = healthy flag; consolidating on thin air = prone to slipping back.</p>
+      </div>
+      <div class="card">
         <h3>The checklist (this is the actual edge)</h3>
         <p>Only enter when a closed bar gives you all of:</p>
         <ul>
@@ -243,7 +325,7 @@
 "use strict";
 /* ============================== state ============================== */
 const S = {
-  symbol: "BTCUSDT",
+  symbol: "SPY",
   tf: "5m",
   candles: [],          // {t,o,h,l,c,v, closed}
   ind: null,            // computed indicators
@@ -461,6 +543,27 @@ function volumeProfile(cs, i0, i1, buckets){
     if (up>=dn){ vaHi++; acc+=bins[vaHi]; } else { vaLo--; acc+=bins[vaLo]; }
   }
   return { lo, hi, bh, bins, poc, vaLo, vaHi, max: bins[poc] };
+}
+
+/* Fair value gaps: a 3-bar imbalance (bar 1's high never overlaps bar 3's low)
+   leaves a price band that traded zero volume. Price tends to come back and
+   "fill" it, and unfilled gaps act as support/resistance. Zones shrink as
+   price eats into them and disappear when fully filled. */
+function findFVGs(cs, upto, ind){
+  const out = [];
+  for (let i = 2; i <= upto; i++){
+    const a = ind.atr[i] || 0;
+    if (cs[i].l > cs[i-2].h && cs[i].l - cs[i-2].h >= 0.25*a){          // bullish gap below price
+      let t = cs[i].l;
+      for (let k = i+1; k <= upto; k++){ t = Math.min(t, cs[k].l); if (t <= cs[i-2].h) break; }
+      if (t > cs[i-2].h) out.push({ dir:1, top:t, bot:cs[i-2].h, born:i });
+    } else if (cs[i].h < cs[i-2].l && cs[i-2].l - cs[i].h >= 0.25*a){   // bearish gap above price
+      let b = cs[i].h;
+      for (let k = i+1; k <= upto; k++){ b = Math.max(b, cs[k].h); if (b >= cs[i-2].l) break; }
+      if (b < cs[i-2].l) out.push({ dir:-1, top:cs[i-2].l, bot:b, born:i });
+    }
+  }
+  return out.filter(g=>g.dir>0).slice(-4).concat(out.filter(g=>g.dir<0).slice(-4));
 }
 
 /* ============================== alerts ============================== */
@@ -789,7 +892,7 @@ function draw(){
   const gridN = 6;
   for (let g=0; g<=gridN; g++){
     const p = lo + (hi-lo)*g/gridN, y = Y(p);
-    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.strokeStyle = getCss("--grid");
     ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(plotW,y); ctx.stroke();
     ctx.fillStyle = getCss("--muted");
     ctx.fillText(fmtPx(p), plotW+6, y);
@@ -803,24 +906,37 @@ function draw(){
       const y0 = Y(p1), y1 = Y(p0);
       const len = (vp.bins[b]/vp.max) * profW;
       const inVA = b >= vp.vaLo && b <= vp.vaHi;
-      ctx.fillStyle = b === vp.poc ? "rgba(232,163,61,0.55)" : inVA ? "rgba(120,150,190,0.30)" : "rgba(120,150,190,0.13)";
+      ctx.fillStyle = b === vp.poc ? getCss("--pocline") : inVA ? getCss("--vpfill2") : getCss("--vpfill");
       ctx.fillRect(plotW - len, y0, len, Math.max(1, y1-y0-1));
     }
     const pocP = vp.lo + (vp.poc+0.5)*vp.bh, py = Y(pocP);
-    ctx.strokeStyle = "rgba(232,163,61,0.65)"; ctx.setLineDash([4,4]);
+    ctx.strokeStyle = getCss("--pocline"); ctx.setLineDash([4,4]);
     ctx.beginPath(); ctx.moveTo(0,py); ctx.lineTo(plotW,py); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(232,163,61,0.9)"; ctx.fillText("POC", plotW - profW - 30, py);
+    ctx.fillStyle = getCss("--poctxt"); ctx.fillText("POC", plotW - profW - 30, py);
   }
 
   // Keltner + Bollinger
-  band(ind.kcU, ind.kcL, "rgba(90,110,140,0.10)");
-  line(ind.kcU, "rgba(120,140,175,0.45)", [4,4]); line(ind.kcL, "rgba(120,140,175,0.45)", [4,4]);
-  line(ind.bbU, "rgba(53,200,232,0.5)");  line(ind.bbL, "rgba(53,200,232,0.5)");
+  band(ind.kcU, ind.kcL, getCss("--kcfill"));
+  line(ind.kcU, getCss("--kcline"), [4,4]); line(ind.kcL, getCss("--kcline"), [4,4]);
+  line(ind.bbU, getCss("--bbline"));  line(ind.bbL, getCss("--bbline"));
   line(ind.vwap, getCss("--accent"), null, 1.7);
+
+  // unfilled fair-value gaps, drawn from birth to the right edge
+  if ($("opt-fvg") && $("opt-fvg").checked){
+    for (const g of findFVGs(cs, i1, ind)){
+      if (g.top < lo || g.bot > hi) continue;
+      const x0 = g.born >= i0 ? X(g.born) : 0;
+      ctx.fillStyle = g.dir > 0 ? getCss("--fvgup") : getCss("--fvgdn");
+      ctx.fillRect(x0, Y(g.top), plotW - x0, Math.max(1, Y(g.bot) - Y(g.top)));
+      ctx.fillStyle = getCss("--panellabel"); ctx.font = "9px sans-serif";
+      ctx.fillText("FVG", Math.min(x0 + 3, plotW - 24), Y(g.top) + 9);
+      ctx.font = "11px sans-serif";
+    }
+  }
 
   // clicked-bar marker (behind the candles)
   if (S.selBar != null && S.selBar >= i0 && S.selBar <= i1){
-    ctx.fillStyle = "rgba(232,163,61,0.10)";
+    ctx.fillStyle = getCss("--selfill");
     ctx.fillRect(X(S.selBar)-bw/2, 0, bw, h);
     ctx.strokeStyle = getCss("--accent"); ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(X(S.selBar), 0); ctx.lineTo(X(S.selBar), h); ctx.stroke();
@@ -884,12 +1000,12 @@ function draw(){
     const base = Pv.y + Pv.hh - 4, hh2 = Pv.hh - 22;
     for (let i=i0;i<=i1;i++){
       const c = cs[i], up = c.c >= c.o, hot = ind.rvol[i] >= 1.5;
-      ctx.fillStyle = up ? (hot ? getCss("--up") : "rgba(38,166,154,0.35)")
-                         : (hot ? getCss("--down") : "rgba(239,83,80,0.35)");
+      ctx.fillStyle = up ? (hot ? getCss("--up") : getCss("--updim"))
+                         : (hot ? getCss("--down") : getCss("--downdim"));
       const bh2 = (c.v/vMax)*hh2;
       ctx.fillRect(X(i)-Math.max(1,cw/2), base-bh2, Math.max(2,cw), bh2);
     }
-    ctx.strokeStyle = "rgba(232,211,61,0.7)"; ctx.beginPath(); let st=false;
+    ctx.strokeStyle = getCss("--volavg"); ctx.beginPath(); let st=false;
     for (let i=i0;i<=i1;i++){ const v=ind.vAvg[i]; if(isNaN(v)){st=false;continue;}
       const y = base-(v/vMax)*hh2; if(!st){ctx.moveTo(X(i),y);st=true;} else ctx.lineTo(X(i),y); }
     ctx.stroke();
@@ -907,9 +1023,27 @@ function draw(){
   {
     const Ps = panels[3];
     const Ys = v => Ps.y + 16 + (Ps.hh-24)*(1 - v/100);
-    ctx.strokeStyle = "rgba(255,255,255,0.10)"; ctx.setLineDash([3,4]);
+    // zones: red = overbought (>80), green = oversold (<20), tinted middle band
+    ctx.fillStyle = getCss("--obzone");  ctx.fillRect(0, Ys(100), plotW, Ys(80)-Ys(100));
+    ctx.fillStyle = getCss("--midzone"); ctx.fillRect(0, Ys(80),  plotW, Ys(20)-Ys(80));
+    ctx.fillStyle = getCss("--oszone");  ctx.fillRect(0, Ys(20),  plotW, Ys(0)-Ys(20));
+    ctx.strokeStyle = getCss("--stochguide"); ctx.setLineDash([3,4]);
     [20,80].forEach(v=>{ ctx.beginPath(); ctx.moveTo(0,Ys(v)); ctx.lineTo(plotW,Ys(v)); ctx.stroke(); });
     ctx.setLineDash([]);
+    ctx.fillStyle = getCss("--muted"); ctx.font = "10px sans-serif";
+    ctx.fillText("80 — overbought (in a trend it can PIN here)", 8, Ys(80)-4);
+    ctx.fillText("20 — oversold", 8, Ys(20)+10);
+    ctx.font = "11px sans-serif";
+    // live value readout on the axis
+    const kNow = ind.stochK[i1], dNow = ind.stochD[i1];
+    if (!isNaN(kNow)){
+      ctx.fillStyle = kNow > 80 ? getCss("--down") : kNow < 20 ? getCss("--up") : getCss("--muted");
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText("K " + kNow.toFixed(0), plotW+6, Ys(Math.max(8, Math.min(92, kNow))));
+      ctx.font = "11px sans-serif";
+      ctx.fillStyle = getCss("--muted");
+      if (!isNaN(dNow)) ctx.fillText("D " + dNow.toFixed(0), plotW+6, Ys(Math.max(8, Math.min(92, kNow))) + 14);
+    }
     [[S.ind.stochK, getCss("--cyan")],[S.ind.stochD, getCss("--accent")]].forEach(([a,col])=>{
       ctx.strokeStyle = col; ctx.beginPath(); let st=false;
       for (let i=i0;i<=i1;i++){ const v=a[i]; if(isNaN(v)){st=false;continue;}
@@ -935,7 +1069,7 @@ function draw(){
   const lg = $("legend");
   if (S.mouse && S.mouse.x < plotW){
     const mi = Math.max(i0, Math.min(i1, i0 + Math.floor(S.mouse.x/bw)));
-    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.setLineDash([3,3]);
+    ctx.strokeStyle = getCss("--crosshair"); ctx.setLineDash([3,3]);
     ctx.beginPath(); ctx.moveTo(X(mi),0); ctx.lineTo(X(mi),h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0,S.mouse.y); ctx.lineTo(plotW,S.mouse.y); ctx.stroke();
     ctx.setLineDash([]);
@@ -952,13 +1086,13 @@ function draw(){
   }
 
   function drawPanelBg(p, label){
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.fillStyle = getCss("--panellabel");
     ctx.font = "9px sans-serif";
     ctx.fillText(label, 8, p.y + 10);
     ctx.font = "11px sans-serif";
   }
 }
-function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function getCss(v){ return getComputedStyle(document.body).getPropertyValue(v).trim(); }
 function fmtPx(p){ return !isFinite(p) ? "—" : p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p === 0 ? "0.00" : p.toPrecision(5); }
 function pad2(x){ return String(x).padStart(2,"0"); }
 
@@ -977,7 +1111,7 @@ async function start(){
     S.candles = []; draw();
   }
 }
-$("go").onclick = () => { S.symbol = $("symbol").value.trim().toUpperCase() || "BTCUSDT"; $("symbol").value = S.symbol; start(); };
+$("go").onclick = () => { S.symbol = $("symbol").value.trim().toUpperCase() || "SPY"; $("symbol").value = S.symbol; start(); };
 $("symbol").addEventListener("keydown", e => { if (e.key === "Enter") $("go").click(); });
 document.querySelectorAll(".tfbtn").forEach(b => b.onclick = () => {
   document.querySelectorAll(".tfbtn").forEach(x=>x.classList.remove("active"));
@@ -1042,6 +1176,7 @@ $("source").onchange = e => { S.forceSource = e.target.value; start(); };
 $("tdkey").value = getTdKey();
 $("tdkey").addEventListener("change", e => {
   setTdKey(e.target.value.trim());
+  try { history.replaceState(null, "", e.target.value.trim() ? "#key=" + e.target.value.trim() : "#"); } catch(err){}
   // a stock key strongly implies stock symbols; swap the untouched default
   if (e.target.value.trim() && S.symbol === "BTCUSDT"){ S.symbol = "SPY"; $("symbol").value = "SPY"; }
   start();
@@ -1148,8 +1283,53 @@ function analyzeBar(i){
     else add(0, 0, "Profile", `inside value (POC $${fmtPx(lvl.poc)}) — balance; expect rotation back to $${fmtPx(lvl.poc)}, not a trend`);
   }
 
+  // bigger picture: the same chart resampled to a higher timeframe. The higher
+  // timeframe sets the current; the lower one only times the entry.
+  const HTF = { "1m":[15,"15m"], "5m":[12,"1h"], "15m":[4,"1h"], "1h":[4,"4h"] }[S.tf];
+  if (HTF){
+    const hcs = resample(cs.slice(0, i+1), HTF[0]);
+    if (hcs.length >= 25){
+      const closes = hcs.map(x=>x.c), e9 = ema(closes,9), e21 = ema(closes,21);
+      const hUp = e9[e9.length-1] > e21[e21.length-1];
+      add(hUp ? 1 : -1, 2, `Bigger picture (${HTF[1]})`,
+        hUp ? `the ${HTF[1]} trend is up — longs swim with the current, shorts fight it`
+            : `the ${HTF[1]} trend is down — longs here are fighting the bigger flow`);
+    }
+  }
+
+  // day character: is today a trend day or a chop day? This decides whether
+  // momentum entries or fade-the-extremes (RSI) entries work at all.
+  {
+    const day = Math.floor(c.t/864e5);
+    let j0 = i; while (j0 > 0 && Math.floor(cs[j0-1].t/864e5) === day) j0--;
+    if (i - j0 >= 12){
+      let crosses = 0;
+      for (let j = j0+1; j <= i; j++)
+        if ((cs[j].c > ind.vwap[j]) !== (cs[j-1].c > ind.vwap[j-1])) crosses++;
+      const net = Math.abs(c.c - cs[j0].o);
+      const path = cs.slice(j0, i+1).reduce((t,x)=>t+Math.abs(x.c-x.o), 0);
+      const eff = path ? net/path : 0;
+      const trending = eff > 0.25 && crosses <= 3, choppy = crosses >= 6 || eff < 0.12;
+      add(trending ? (c.c >= cs[j0].o ? 1 : -1) : 0, 1, "Day character",
+        trending ? `TREND day so far (${crosses} VWAP crosses, ${Math.round(eff*100)}% efficient) — ride momentum, do NOT fade with RSI`
+        : choppy ? `CHOP day so far (${crosses} VWAP crosses) — fade extremes back to VWAP/POC; RSI extremes actually work today`
+        : "mixed day so far — no strong regime, size down");
+    }
+  }
+
   const lean = ind.squeeze[i] ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
   return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], lvl };
+}
+
+function resample(cs, f){
+  const out = [];
+  for (let i = 0; i + f <= cs.length; i += f){
+    const sl = cs.slice(i, i+f);
+    out.push({ t:sl[0].t, o:sl[0].o, c:sl[sl.length-1].c,
+               h:Math.max.apply(null, sl.map(x=>x.h)), l:Math.min.apply(null, sl.map(x=>x.l)),
+               v:sl.reduce((t,x)=>t+x.v,0) });
+  }
+  return out;
 }
 
 /* bars that looked the same (same signature): did ±1 ATR hit favorably first
@@ -1226,8 +1406,22 @@ function renderRead(i){
   const fHtml = a.factors.map(f => {
     const mark = f.dir > 0 ? "▲" : f.dir < 0 ? "▼" : "•";
     const cls  = f.dir > 0 ? "pro" : f.dir < 0 ? "con" : "neu";
-    const pct  = f.pct ? `<span class="fpct">${f.pct.pct}% of such bars closed ${f.dir>=0?"higher":"lower"} 10 bars on (n=${f.pct.n})</span>` : "";
-    return `<div class="fline"><span class="fmark ${cls}">${mark}</span><span><b>${f.name}:</b> ${f.note}</span>${pct}</div>`;
+    let bar = '<div class="pbar off"><span>no stat</span></div>';
+    if (f.pct){
+      const p = f.pct.pct, edge = p - 50;
+      const w = Math.min(46, Math.abs(edge) * 2.3);
+      const fill = edge >= 0
+        ? `<div class="fill pro" style="left:50%;width:${w}%"></div>`
+        : `<div class="fill con" style="right:50%;width:${w}%"></div>`;
+      bar = `<div class="pbar" title="50% would be a coin flip — the colored part is the measured edge">
+               <div class="tick"></div>${fill}</div>
+             <div class="plabel">${p}% <span>(${edge>=0?"+":""}${edge} vs coin flip, n=${f.pct.n})</span></div>`;
+    }
+    return `<div class="frow">
+      <span class="fmark ${cls}">${mark}</span>
+      <div><div class="fname">${f.name}</div><div class="fnote">${f.note}</div></div>
+      <div class="fedge">${bar}</div>
+    </div>`;
   }).join("");
 
   // clicking a historical bar reveals what actually happened — practice mode
@@ -1242,15 +1436,20 @@ function renderRead(i){
   }
 
   const d = new Date(a.c.t);
+  const needle = Math.max(2, Math.min(98, (a.score + 9) / 18 * 100));
+  const meterHtml = `<div class="meter"><div class="mtick"></div><div class="mneedle" style="left:${needle}%"></div></div>
+    <div class="mlabels"><span>strong down</span><span>no edge</span><span>strong up</span></div>`;
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
       <div class="fline hint">${S.symbol} ${S.tf} · bar ${d.toUTCString().slice(5,22)} UTC · price $${fmtPx(a.c.c)}</div>
+      ${meterHtml}
       <div class="fline">${verdictSub}</div>
       ${oddsHtml}
       <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
     </div>
-    <div class="card"><h3>The evidence, piece by piece</h3>${fHtml}</div>
+    <div class="card"><h3>The evidence — bar shows the measured edge vs a coin flip</h3>${fHtml}
+      <div class="fline hint">Why never 80%? Real edges in liquid markets are small. 50% is a coin flip; a repeatable 55–58% with a decent win size is a professional edge. Anything promising more is lying to you.</div></div>
     ${lvlHtml}
     ${revealHtml}
   </div>`;
@@ -1418,8 +1617,25 @@ jRender();
 
 window.addEventListener("resize", draw);
 
-// returning stock traders land on their market, not the crypto default
-if (getTdKey()){ S.symbol = "SPY"; $("symbol").value = "SPY"; }
+/* Theme: light by default (chart colors come from CSS vars, so the canvas
+   follows). The choice is remembered. */
+function applyTheme(t){
+  document.body.classList.toggle("light", t === "light");
+  $("themebtn").textContent = t === "light" ? "🌙" : "☀️";
+  try { localStorage.setItem("theme", t); } catch(e){}
+  draw();
+}
+$("themebtn").onclick = () => applyTheme(document.body.classList.contains("light") ? "dark" : "light");
+applyTheme((()=>{ try { return localStorage.getItem("theme"); } catch(e){ return null; } })() || "light");
+
+/* The API key survives two ways: localStorage on this device, and the URL
+   hash — saving a key puts it in the address bar, so bookmarking the page
+   carries the key to any other device. One key works forever; never
+   generate a new one. */
+const keyFromLink = location.hash.match(/key=([\w-]+)/);
+if (keyFromLink){ setTdKey(keyFromLink[1]); $("tdkey").value = keyFromLink[1]; }
+else if (getTdKey()){ try { history.replaceState(null, "", "#key=" + getTdKey()); } catch(e){} }
+
 start();
 </script>
 </body>
