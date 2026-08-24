@@ -115,6 +115,13 @@
   .pbar .fill.pro{background:var(--up);} .pbar .fill.con{background:var(--down);}
   .plabel{font-size:11px; margin-top:3px; font-weight:700;}
   .plabel span{font-weight:400; color:var(--muted);}
+  .frow .fmark em{display:block; font-style:normal; font-size:10px; font-weight:700; opacity:.85;}
+  .scale{font-size:12px; color:var(--muted); margin:6px 0 2px; line-height:1.5;}
+  .scale b{color:var(--text); font-size:14px;}
+  .scale .bands{display:block; font-size:11px; opacity:.8;}
+  .ftotal{margin-top:8px; padding-top:8px; border-top:1px solid var(--border);
+    font-size:12px; color:var(--muted); text-align:right;}
+  .ftotal b{color:var(--text); font-size:13px;}
   .meter{position:relative; height:14px; border-radius:7px; margin:10px 0 2px;
     background:linear-gradient(90deg, var(--down), var(--border) 40%, var(--border) 60%, var(--up));}
   .meter .mtick{position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--muted);}
@@ -1457,13 +1464,21 @@ function signature(i){
            ind.rvol[i] >= 1.2 ? "H" : "L" ].join("");
 }
 
+/* What each factor could contribute if it voted at full strength. The sum over
+   the factors actually present is the score's ceiling. */
+const POTENTIAL = { "Tape (now)":2, "VWAP":2, "Momentum":2, "Squeeze":2,
+                    "Volume":1, "Stoch RSI":1, "Profile":1, "Day character":1, "Right now":0 };
+
 function analyzeBar(i){
   const cs = S.candles, ind = S.ind;
   if (!cs || !ind || i < 45 || i >= cs.length) return null;
   const c = cs[i], atr = ind.atr[i] || (c.h - c.l);
   const factors = [];
   let score = 0;
-  const add = (dir, w, name, note, pct) => { score += dir*w; factors.push({ dir, name, note, pct }); };
+  // Each factor's contribution is stored on the factor itself, so the rows the
+  // user reads always add up to the score they are shown. Nothing adjusts the
+  // total outside this function.
+  const add = (dir, w, name, note, pct) => { score += dir*w; factors.push({ dir, w, pts: dir*w, name, note, pct }); };
 
   // fraction of history bars sharing a feature that then closed in that
   // feature's direction 10 bars later — the honest version of "percentages"
@@ -1497,10 +1512,9 @@ function analyzeBar(i){
     pctFor(j => (cs[j].c > ind.vwap[j]) === aboveV, aboveV ? 1 : -1));
 
   const m = ind.mom[i], mUp = m >= 0, mRising = m >= (ind.mom[i-1] ?? m);
-  add(mUp ? 1 : -1, 2, "Momentum",
+  add(mUp ? 1 : -1, (mUp === mRising) ? 2 : 1, "Momentum",
     `${mUp ? "positive" : "negative"} and ${mRising ? "strengthening" : "fading — a leftover reading, counted at half weight"}`,
     pctFor(j => !isNaN(ind.mom[j]) && (ind.mom[j] >= 0) === mUp, mUp ? 1 : -1));
-  if (mUp !== mRising) score += mUp ? -1 : 1;   // fading momentum discounts itself
 
   let relAge = 0;
   if (!ind.squeeze[i]) for (let k=1;k<=3;k++) if (ind.squeeze[i-k]){ relAge = k; break; }
@@ -1590,7 +1604,7 @@ function analyzeBar(i){
     const eff = box > 0 ? Math.abs(net6) / box : 0;
     if (box < 1.5*atr && eff < 0.4 && tapeDir === 0){
       stalled = { top: hh, bot: ll };
-      factors.unshift({ dir:0, name:"Right now",
+      factors.unshift({ dir:0, w:0, pts:0, name:"Right now",
         note:`BARCODING — six bars inside ${(box/atr).toFixed(1)} ATR with only ${Math.round(eff*100)}% of that box as net progress ($${fmtPx(ll)}–$${fmtPx(hh)}). The directional factors below are leftovers from before this stall.` });
     }
   }
@@ -1599,7 +1613,12 @@ function analyzeBar(i){
   // both are computed from past bars and go stale the moment price travels
   const lean = ((ind.squeeze[i] && tapeDir === 0) || stalled) ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
   const tapeConflict = lean !== 0 && tapeDir !== 0 && tapeDir !== lean;
-  return { i, c, atr, factors, score, lean, squeezeOn: ind.squeeze[i], stalled, lvl, tapeDir, tapeConflict };
+  // the most this set of factors could have scored if every one voted the same
+  // way — the denominator that makes the raw total mean something
+  const ceiling = factors.reduce((t,f) => t + (POTENTIAL[f.name] ?? (f.name.startsWith("Bigger picture") ? 2 : 1)), 0);
+  const tally = { up: factors.filter(f=>f.pts>0).length, down: factors.filter(f=>f.pts<0).length,
+                  flat: factors.filter(f=>!f.pts).length };
+  return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, lvl, tapeDir, tapeConflict };
 }
 
 function resample(cs, f){
@@ -1649,6 +1668,11 @@ function renderRead(i){
   const cs = S.candles;
   const dirWord = a.lean > 0 ? "UP" : a.lean < 0 ? "DOWN" : "";
   const conviction = Math.abs(a.score) >= 5 ? "strong" : "modest";
+  const scaleLine = `<div class="scale">
+      <b>${a.score > 0 ? "+" : ""}${a.score}</b> out of a possible ±${a.ceiling}
+      &nbsp;·&nbsp; ${a.tally.up} signal${a.tally.up===1?"":"s"} up, ${a.tally.down} down, ${a.tally.flat} no vote
+      <span class="bands">0–1 = no edge&nbsp;·&nbsp;2–4 = modest&nbsp;·&nbsp;5+ = strong</span>
+    </div>`;
   const hist = a.lean !== 0 ? matchedHistory(i) : null;
 
   let verdictCls = "none", verdictTxt, verdictSub;
@@ -1663,7 +1687,7 @@ function renderRead(i){
     verdictSub = "The evidence is split — this is exactly the spot where you'd normally enter on hope. Skip it.";
   } else {
     verdictCls = a.lean > 0 ? "long" : "short";
-    verdictTxt = `LEANS ${dirWord} (${conviction}, score ${a.score > 0 ? "+" : ""}${a.score})`;
+    verdictTxt = `LEANS ${dirWord} — ${conviction}`;
     verdictSub = "A lean from confluence — not a prediction. The percentages below say how this exact look has resolved on this chart.";
     if (a.tapeConflict){
       verdictSub = `<b style="color:var(--accent)">⚠ The tape is grinding ${a.tapeDir > 0 ? "UP" : "DOWN"} against this lean right now.</b> The lean is context; the tape is now. While price keeps moving against it, the lean is losing — don't fight a grinding tape, wait for it to actually stall or roll before acting on this.`;
@@ -1715,8 +1739,9 @@ function renderRead(i){
                <div class="tick"></div>${fill}</div>
              <div class="plabel">${p}% <span>(${edge>=0?"+":""}${edge} vs coin flip, n=${f.pct.n})</span></div>`;
     }
+    const pts = f.pts > 0 ? `+${f.pts}` : f.pts < 0 ? `${f.pts}` : "0";
     return `<div class="frow">
-      <span class="fmark ${cls}">${mark}</span>
+      <span class="fmark ${cls}">${mark}<em>${pts}</em></span>
       <div><div class="fname">${f.name}</div><div class="fnote">${f.note}</div></div>
       <div class="fedge">${bar}</div>
     </div>`;
@@ -1734,9 +1759,10 @@ function renderRead(i){
   }
 
   const d = new Date(a.c.t);
-  const needle = Math.max(2, Math.min(98, (a.score + 9) / 18 * 100));
+  const needle = Math.max(2, Math.min(98, (a.score + a.ceiling) / (2*a.ceiling) * 100));
   const meterHtml = `<div class="meter"><div class="mtick"></div><div class="mneedle" style="left:${needle}%"></div></div>
-    <div class="mlabels"><span>strong down</span><span>no edge</span><span>strong up</span></div>`;
+    <div class="mlabels"><span>−${a.ceiling} all down</span><span>0 split</span><span>+${a.ceiling} all up</span></div>
+    ${scaleLine}`;
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
@@ -1746,7 +1772,8 @@ function renderRead(i){
       ${oddsHtml}
       <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
     </div>
-    <div class="card"><h3>The evidence — bar shows the measured edge vs a coin flip</h3>${fHtml}
+    <div class="card"><h3>The evidence — points, then the measured edge vs a coin flip</h3>${fHtml}
+      <div class="ftotal">these points sum to <b>${a.score > 0 ? "+" : ""}${a.score}</b> of a possible ±${a.ceiling}</div>
       <div class="fline hint">Why never 80%? Real edges in liquid markets are small. 50% is a coin flip; a repeatable 55–58% with a decent win size is a professional edge. Anything promising more is lying to you.</div></div>
     ${lvlHtml}
     ${revealHtml}
