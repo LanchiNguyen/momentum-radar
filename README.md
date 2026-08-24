@@ -57,7 +57,6 @@ entering them once and the bookmark carries them to any device.
 **Crypto**: keyless. Binance, Binance.US and Coinbase are tried in order,
 because binance.com refuses US traffic; the source dropdown can pin one.
 
-"Demo data" runs a synthetic tape if you want to see it work without a feed,
-and "Diagnose" probes each source and names what is blocking it.
+"Diagnose" probes each source and names what is blocking it.
 
 Educational tool. Not financial advice.

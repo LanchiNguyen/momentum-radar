@@ -174,7 +174,7 @@
            title="Optional second free key from finnhub.io — streams every trade so the chart ticks live like TradingView. Without it the chart refreshes every 12s.">
     <a id="fhlink" href="https://finnhub.io/register" target="_blank" rel="noopener" title="Free real-time US stock trades (email signup, no card)">get tick key</a>
   </div>
-  <div class="ctl"><button id="demo">Demo data</button><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
+  <div class="ctl"><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
   <span id="status">connecting…</span>
 </header>
 
@@ -338,8 +338,6 @@ const S = {
   ind: null,            // computed indicators
   barsVisible: 160,
   ws: null,
-  demo: false,
-  demoTimer: null,
   firedKeys: new Set(), // alert dedupe: type@barTime
   mouse: null,
   source: null,         // the SOURCES entry that actually answered
@@ -678,7 +676,7 @@ function fireAlert(type, barIdx, dir, text){
   log.prepend(el);
   while (log.children.length > 60) log.lastChild.remove();
   if ($("opt-sound").checked) beep(dir);
-  if ("Notification" in window && Notification.permission === "granted" && !S.demo){
+  if ("Notification" in window && Notification.permission === "granted"){
     try { new Notification(`${S.symbol} ${S.tf}`, { body: text, silent: true }); } catch(e){}
   }
 }
@@ -761,7 +759,7 @@ function connectWS(){
   S.ws = ws;
   src.attach(ws, S.resolvedSym, S.tf);
   ws.onclose = () => {
-    if (S.ws !== ws || S.demo) return;
+    if (S.ws !== ws) return;
     // history is already on screen; say so rather than implying the chart is dead
     setStatus(`${S.source.label} ${S.resolvedSym} · chart loaded, live stream reconnecting…`, "err");
     setTimeout(()=>{ if (S.ws === ws) connectWS(); }, 3000);
@@ -828,7 +826,7 @@ function disconnectWS(){
    authority on completed bars and volume. */
 function connectTicks(){
   disconnectTicks();
-  if (!getFhKey() || S.demo || looksCrypto(S.symbol)) return;
+  if (!getFhKey() || looksCrypto(S.symbol)) return;
   let ws;
   try { ws = new WebSocket("wss://ws.finnhub.io?token=" + encodeURIComponent(getFhKey())); } catch(e){ return; }
   S.tickWs = ws;
@@ -873,7 +871,7 @@ function disconnectTicks(){
    merge them onto the chart. Alerts still fire only when a bar rolls over. */
 async function pollOnce(){
   const src = S.source;
-  if (!src || !src.poll || S.demo) return;
+  if (!src || !src.poll) return;
   try{
     const plan = S.plan || { param:S.tf, factor:1 };
     const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)), { cache:"no-store" });
@@ -911,40 +909,6 @@ async function pollOnce(){
   }catch(e){}                                  // transient — next tick retries
 }
 
-/* ---- demo feed: synthetic regime-switching tape so the tool works offline ---- */
-function startDemo(){
-  stopDemo(); disconnectWS();
-  S.demo = true; S.firedKeys.clear(); S.selBar = null;
-  let px = 100, t = Date.now() - 500*TF_MS[S.tf], regime = 0, left = 60, drift = 0;
-  const rand = (()=>{ let s=42; return ()=>{ s=(s*1664525+1013904223)>>>0; return s/2**32; }; })();
-  const mk = () => {
-    if (--left <= 0){
-      regime = regime === 0 ? 1 : 0;                    // chop <-> trend
-      left = regime === 0 ? 40+Math.floor(rand()*40) : 15+Math.floor(rand()*20);
-      drift = regime === 1 ? (rand()<0.5?-1:1)*0.35 : 0;
-    }
-    const volat = regime === 0 ? 0.12 : 0.45;
-    const o = px, steps = 8; let h=o, l=o, c=o;
-    for (let s=0;s<steps;s++){ c += drift/steps + (rand()-0.5)*volat; h=Math.max(h,c); l=Math.min(l,c); }
-    px = c;
-    const v = (regime===1 ? 900+rand()*900 : 250+rand()*250) * (1+Math.abs(c-o));
-    t += TF_MS[S.tf];
-    return { t, o, h, l, c, v, closed:true };
-  };
-  S.candles = Array.from({length:500}, mk);
-  S.candles[S.candles.length-1].closed = false;
-  refresh(false);
-  setStatus("DEMO · synthetic tape (alerts fire, no notifications)", "live");
-  S.demoTimer = setInterval(()=>{
-    const cs = S.candles;
-    cs[cs.length-1].closed = true;
-    refresh(true);
-    cs.push(mk()); cs[cs.length-1].closed = false;
-    if (cs.length > 600) cs.shift();
-    refresh(false);
-  }, 1500);
-}
-function stopDemo(){ S.demo=false; if (S.demoTimer){ clearInterval(S.demoTimer); S.demoTimer=null; } }
 
 /* ============================== chart ============================== */
 const canvas = $("chart"), ctx = canvas.getContext("2d");
@@ -975,7 +939,7 @@ function draw(){
     ctx.fillText("No source could serve this symbol — the status bar says which failed and why.", w/2, h/2);
     ctx.fillStyle = getCss("--accent");
     ctx.fillText(getTdKey()
-      ? "Press “Diagnose” to test each source, or “Demo data” to see how the tool works."
+      ? "Press “Diagnose” to test each source and see what is blocking it."
       : "Stocks (SPY, NVDA…) need the free API key — “get key” in the header, then paste it there.", w/2, h/2 + 26);
     ctx.textAlign = "left"; ctx.font = "11px sans-serif";
     return;
@@ -1239,16 +1203,14 @@ function pad2(x){ return String(x).padStart(2,"0"); }
 
 /* ============================== wiring ============================== */
 async function start(){
-  stopDemo(); disconnectWS();
+  disconnectWS();
   S.firedKeys.clear(); S.selBar = null;
   try{
     await loadHistory();
-    if (S.demo) return; // user switched to demo while history was loading
     refresh(false);
     connectWS();
     connectTicks();
   }catch(e){
-    if (S.demo) return; // user already switched to demo while the fetch was in flight
     setStatus("No feed — " + e.message, "err");
     S.candles = []; draw();
   }
@@ -1259,9 +1221,8 @@ document.querySelectorAll(".tfbtn").forEach(b => b.onclick = () => {
   document.querySelectorAll(".tfbtn").forEach(x=>x.classList.remove("active"));
   b.classList.add("active");
   S.tf = b.dataset.tf;
-  S.demo ? startDemo() : start();
+  start();
 });
-$("demo").onclick = () => startDemo();
 
 /* A plain fetch failure can't tell "the network never reached the host" from
    "the host answered but the browser refused to hand it over". A no-cors probe
