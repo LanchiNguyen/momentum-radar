@@ -149,9 +149,13 @@
   </div>
   <div class="ctl" id="tfs">
     <button class="tfbtn" data-tf="1m">1m</button>
+    <button class="tfbtn" data-tf="3m">3m</button>
     <button class="tfbtn active" data-tf="5m">5m</button>
     <button class="tfbtn" data-tf="15m">15m</button>
+    <button class="tfbtn" data-tf="30m">30m</button>
+    <button class="tfbtn" data-tf="45m">45m</button>
     <button class="tfbtn" data-tf="1h">1h</button>
+    <button class="tfbtn" data-tf="2h">2h</button>
   </div>
   <div class="ctl">
     <select id="source" aria-label="data source">
@@ -340,9 +344,48 @@ const S = {
   forceSource: "",      // "" = auto-probe, otherwise pin to one source id
   pollTimer: null,      // live updates for sources with no stream
 };
-const TF_MS  = { "1m":60e3, "5m":300e3, "15m":900e3, "1h":3600e3 };
-const TF_SEC = { "1m":60, "5m":300, "15m":900, "1h":3600 };
-const TF_TD  = { "1m":"1min", "5m":"5min", "15m":"15min", "1h":"1h" };
+const TF_MS = { "1m":60e3, "3m":180e3, "5m":300e3, "15m":900e3, "30m":18e5, "45m":27e5, "1h":36e5, "2h":72e5 };
+
+/* Per source: which intervals exist natively, and how to build the rest.
+   "native" maps our tf to the source's own parameter; "derived" maps a tf the
+   source lacks to [base tf, factor] — we fetch the base and resample. */
+const PLANS = {
+  twelvedata: {
+    native: { "1m":"1min", "5m":"5min", "15m":"15min", "30m":"30min", "45m":"45min", "1h":"1h", "2h":"2h" },
+    derived: { "3m":["1m",3] },
+  },
+  binance: {
+    native: { "1m":"1m", "3m":"3m", "5m":"5m", "15m":"15m", "30m":"30m", "1h":"1h", "2h":"2h" },
+    derived: { "45m":["15m",3] },
+  },
+  coinbase: {
+    native: { "1m":60, "5m":300, "15m":900, "1h":3600 },
+    derived: { "3m":["1m",3], "30m":["15m",2], "45m":["15m",3], "2h":["1h",2] },
+  },
+};
+PLANS.binanceus = PLANS.binance;
+
+function planFor(srcId, tf){
+  const p = PLANS[srcId]; if (!p) return null;
+  if (p.native[tf] != null) return { param: p.native[tf], factor: 1, baseMs: TF_MS[tf] };
+  const d = p.derived[tf]; if (!d) return null;
+  return { param: p.native[d[0]], factor: d[1], baseMs: TF_MS[d[0]] };
+}
+
+/* Time-anchored resample: bars grouped into epoch-aligned buckets of tfMs, so
+   the grid never drifts between the initial load and later refreshes. */
+function resampleTf(cs, tfMs){
+  const out = [];
+  for (const b of cs){
+    const bt = Math.floor(b.t / tfMs) * tfMs;
+    const last = out[out.length-1];
+    if (last && last.t === bt){
+      last.h = Math.max(last.h, b.h); last.l = Math.min(last.l, b.l);
+      last.c = b.c; last.v += b.v;
+    } else out.push({ t:bt, o:b.o, h:b.h, l:b.l, c:b.c, v:b.v, closed:true });
+  }
+  return out;
+}
 
 /* The stock feed needs a key (there is no keyless stock API). It lives only in
    this browser's localStorage — it never leaves the machine except in requests
@@ -358,8 +401,8 @@ const SOURCES = [
   {
     id:"twelvedata", label:"Twelve Data (stocks)", needsKey:true, poll:true,
     sym: s => s.toUpperCase().trim(),
-    rest: (s,tf) => `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(s)}` +
-      `&interval=${TF_TD[tf]}&outputsize=500&timezone=UTC&apikey=${encodeURIComponent(getTdKey())}`,
+    rest: (s,p,n) => `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(s)}` +
+      `&interval=${p}&outputsize=${n}&timezone=UTC&apikey=${encodeURIComponent(getTdKey())}`,
     // {values:[{datetime,open,high,low,close,volume},...]} newest first; errors
     // arrive as HTTP 200 with {status:"error",message}
     parse: j => {
@@ -373,17 +416,17 @@ const SOURCES = [
   {
     id:"binance", label:"Binance",
     sym: s => s.toUpperCase().replace(/[^A-Z0-9]/g,""),
-    rest: (s,tf) => `https://api.binance.com/api/v3/klines?symbol=${s}&interval=${tf}&limit=500`,
+    rest: (s,p,n) => `https://api.binance.com/api/v3/klines?symbol=${s}&interval=${p}&limit=${Math.min(1000,n)}`,
     parse: binanceKlines,
-    open: (s,tf) => new WebSocket(`wss://stream.binance.com:9443/ws/${s.toLowerCase()}@kline_${tf}`),
+    open: (s,p) => new WebSocket(`wss://stream.binance.com:9443/ws/${s.toLowerCase()}@kline_${p}`),
     attach: binanceAttach,
   },
   {
     id:"binanceus", label:"Binance.US",
     sym: s => s.toUpperCase().replace(/[^A-Z0-9]/g,""),
-    rest: (s,tf) => `https://api.binance.us/api/v3/klines?symbol=${s}&interval=${tf}&limit=500`,
+    rest: (s,p,n) => `https://api.binance.us/api/v3/klines?symbol=${s}&interval=${p}&limit=${Math.min(1000,n)}`,
     parse: binanceKlines,
-    open: (s,tf) => new WebSocket(`wss://stream.binance.us:9443/ws/${s.toLowerCase()}@kline_${tf}`),
+    open: (s,p) => new WebSocket(`wss://stream.binance.us:9443/ws/${s.toLowerCase()}@kline_${p}`),
     attach: binanceAttach,
   },
   {
@@ -396,7 +439,7 @@ const SOURCES = [
       if (!m) return s + "-USD";
       return `${m[1]}-${(m[2]==="USDT"||m[2]==="USDC") ? "USD" : m[2]}`;
     },
-    rest: (s,tf) => `https://api.exchange.coinbase.com/products/${s}/candles?granularity=${TF_SEC[tf]}`,
+    rest: (s,p,n) => `https://api.exchange.coinbase.com/products/${s}/candles?granularity=${p}`,
     // Coinbase returns [time, low, high, open, close, volume], newest first
     parse: rows => {
       if (!Array.isArray(rows)) throw new Error((rows && rows.message) || "unexpected data");
@@ -664,18 +707,22 @@ async function loadHistory(){
   if (!list.length) throw new Error("no source available — check the source dropdown / stock key");
   for (const src of list){
     if (src.needsKey && !getTdKey()){ tried.push(`${src.label}: needs your free API key (paste it in the header)`); continue; }
+    const plan = planFor(src.id, S.tf);
+    if (!plan){ tried.push(`${src.label}: no ${S.tf} data`); continue; }
     const sym = src.sym(S.symbol);
     setStatus(`trying ${src.label} · ${sym}…`);
     try{
-      const res = await fetch(src.rest(sym, S.tf), { cache:"no-store" });
+      const res = await fetch(src.rest(sym, plan.param, 500 * plan.factor), { cache:"no-store" });
       let body = null; try { body = await res.json(); } catch(e){}
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
-      const cs = src.parse(body);
-      if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough data for ${sym}`); continue; }
+      let cs = src.parse(body);
+      if (plan.factor > 1) cs = resampleTf(cs, TF_MS[S.tf]);
+      if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough ${S.tf} data for ${sym}`); continue; }
       S.candles = cs;
       S.candles[S.candles.length-1].closed = false;
       S.source = src;
       S.resolvedSym = sym;
+      S.plan = plan;
       return;
     }catch(e){
       tried.push(`${src.label}: ${e.name === "TypeError" ? "blocked/unreachable" : e.message}`);
@@ -687,13 +734,13 @@ async function loadHistory(){
 function connectWS(){
   disconnectWS();
   const src = S.source; if (!src) return;
-  if (src.poll){
+  if (src.poll || (S.plan && S.plan.factor > 1)){
     setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} — refreshes every 20s`, "live");
     S.pollTimer = setInterval(pollOnce, 20000);
     return;
   }
   let ws;
-  try { ws = src.open(S.resolvedSym, S.tf); } catch(e){ setStatus("stream unavailable — chart is static", "err"); return; }
+  try { ws = src.open(S.resolvedSym, S.plan.param, S.tf); } catch(e){ setStatus("stream unavailable — chart is static", "err"); return; }
   S.ws = ws;
   src.attach(ws, S.resolvedSym, S.tf);
   ws.onclose = () => {
@@ -763,10 +810,12 @@ async function pollOnce(){
   const src = S.source;
   if (!src || !src.poll || S.demo) return;
   try{
-    const url = src.rest(S.resolvedSym, S.tf).replace("outputsize=500", "outputsize=5");
-    const res = await fetch(url, { cache:"no-store" });
+    const plan = S.plan || { param:S.tf, factor:1 };
+    const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)), { cache:"no-store" });
     if (!res.ok) return;                       // transient — keep the last good chart
-    const fresh = src.parse(await res.json());
+    let fresh = src.parse(await res.json());
+    if (plan.factor > 1) fresh = resampleTf(fresh, TF_MS[S.tf]);
+    if (fresh.length > 1) fresh = fresh.slice(1);   // oldest bucket may be missing its early base bars
     if (!fresh.length) return;
     const cs = S.candles;
     let closedAny = false;
@@ -1059,7 +1108,7 @@ function draw(){
   const step = Math.max(1, Math.round(n/8));
   for (let i=i0;i<=i1;i+=step){
     const d = new Date(cs[i].t);
-    const lbl = S.tf==="1h" ? `${d.getUTCMonth()+1}/${d.getUTCDate()} ${pad2(d.getUTCHours())}h`
+    const lbl = (S.tf==="1h" || S.tf==="2h") ? `${d.getUTCMonth()+1}/${d.getUTCDate()} ${pad2(d.getUTCHours())}h`
                             : `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
     ctx.fillText(lbl, X(i), h-8);
   }
@@ -1130,7 +1179,8 @@ async function probeSource(src){
     return { host:"api.twelvedata.com", ok:false,
              verdict:"no API key set — stocks need a free key from twelvedata.com (paste it in the header)" };
   const sym = src.sym(S.symbol);
-  const url = src.rest(sym, S.tf);
+  const plan = planFor(src.id, S.tf) || planFor(src.id, "5m");
+  const url = src.rest(sym, plan.param, 10);
   const host = (() => { try { return new URL(url).host; } catch(e){ return url; } })();
   try{
     const res = await fetch(url, { cache:"no-store" });
@@ -1285,7 +1335,8 @@ function analyzeBar(i){
 
   // bigger picture: the same chart resampled to a higher timeframe. The higher
   // timeframe sets the current; the lower one only times the entry.
-  const HTF = { "1m":[15,"15m"], "5m":[12,"1h"], "15m":[4,"1h"], "1h":[4,"4h"] }[S.tf];
+  const HTF = { "1m":[15,"15m"], "3m":[10,"30m"], "5m":[12,"1h"], "15m":[4,"1h"],
+                "30m":[4,"2h"], "45m":[4,"3h"], "1h":[4,"4h"], "2h":[4,"8h"] }[S.tf];
   if (HTF){
     const hcs = resample(cs.slice(0, i+1), HTF[0]);
     if (hcs.length >= 25){
