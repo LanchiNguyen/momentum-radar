@@ -82,18 +82,33 @@
   #vb-chips .chip.pro{color:var(--up); border-color:var(--up);}
   #vb-chips .chip.con{color:var(--down); border-color:var(--down);}
   #vb-when{margin-left:auto;}
-  main{display:grid; grid-template-columns:1fr 320px; gap:0;}
+  main{display:grid; grid-template-columns:1fr 390px; gap:0;}
   #chartwrap{position:relative; min-width:0;}
   #chart{display:block; width:100%; cursor:crosshair;}
   #legend{position:absolute; top:8px; left:10px; font-size:12px; color:var(--muted); pointer-events:none; white-space:pre; text-shadow:0 1px 2px #000;}
-  aside{border-left:1px solid var(--border); background:var(--panel); display:flex; flex-direction:column; min-height:0;}
+  aside{border-left:1px solid var(--border); background:var(--panel); display:flex; flex-direction:column;
+    min-height:0; max-height:calc(100vh - 150px); overflow-y:auto;}
+  .tabbar{display:flex; gap:6px; align-items:center; padding:10px 12px 8px; position:sticky; top:0;
+    background:var(--panel); border-bottom:1px solid var(--border); z-index:2;}
+  .tabbtn{background:var(--bg); border:1px solid var(--border); color:var(--muted); padding:5px 12px;
+    border-radius:6px; cursor:pointer; font-weight:700; font-size:12px;}
+  .tabbtn.active{background:var(--accent); color:#161006; border-color:var(--accent);}
+  .tabbar #readnow{margin-left:auto; font-size:12px; padding:5px 10px;}
+  #tab-dot{display:none; width:6px; height:6px; border-radius:50%; background:var(--accent); vertical-align:middle;}
+  #tab-dot.on{display:inline-block;}
+  .tabbtn.active #tab-dot{background:#161006;}
+  .tabpane{min-height:0;}
+  aside .frow{grid-template-columns:22px 1fr;}
+  aside .fedge{grid-column:2; min-width:0;}
+  aside .cards{gap:10px;}
+  aside .card{padding:12px 13px;}
   aside h2{font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:12px 14px 6px;}
   #alertopts{padding:0 14px 10px; border-bottom:1px solid var(--border); font-size:13px;}
   #alertopts label{display:flex; align-items:center; gap:8px; padding:3px 0; cursor:pointer;}
   #alertopts .thr{display:flex; align-items:center; gap:8px; padding:6px 0 2px; color:var(--muted); font-size:12px;}
   #notifbtn{margin:8px 0 2px; width:100%;}
   #notifbtn.granted{border-color:var(--good); color:var(--good); cursor:default;}
-  #alertlog{flex:1; overflow-y:auto; padding:6px 10px; min-height:160px; max-height:520px;}
+  #alertlog{padding:6px 10px; min-height:120px;}
   .alert-item{border:1px solid var(--border); border-radius:8px; padding:8px 10px; margin:6px 0; font-size:13px; background:var(--bg); animation:pop .25s ease;}
   @keyframes pop{from{transform:scale(.96); opacity:0;} to{transform:scale(1); opacity:1;}}
   .alert-item .tag{display:inline-block; font-size:10px; font-weight:700; letter-spacing:.5px; padding:1px 7px; border-radius:10px; margin-right:6px; text-transform:uppercase;}
@@ -102,8 +117,8 @@
   .tag.info{background:rgba(232,163,61,.18); color:var(--accent);}
   .alert-item time{float:right; color:var(--muted); font-size:11px;}
   .empty{color:var(--muted); font-size:12px; text-align:center; padding:24px 10px;}
-  #read, #journal, #backtest{grid-column:1 / -1; border-top:1px solid var(--border); padding:18px 18px 24px; background:var(--panel);}
-  #read h2, #journal h2, #backtest h2{font-size:15px; margin-bottom:10px;}
+  #journal, #backtest{grid-column:1 / -1; border-top:1px solid var(--border); padding:18px 18px 24px; background:var(--panel);}
+  #journal h2, #backtest h2{font-size:15px; margin-bottom:10px;}
   .btable{border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums;}
   .btable th{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; text-align:left; padding:5px 10px 5px 0; border-bottom:1px solid var(--border);}
   .btable td{padding:5px 10px 5px 0; border-bottom:1px solid var(--border);}
@@ -189,7 +204,8 @@
   .card ul{padding-left:18px; margin-top:4px;}
   .card .why{color:var(--muted); font-size:12px; margin-top:8px;}
   footer{padding:10px 16px 24px; color:var(--muted); font-size:11px; background:var(--panel);}
-  @media (max-width:900px){ main{grid-template-columns:1fr;} aside{border-left:none; border-top:1px solid var(--border);} }
+  @media (max-width:900px){ main{grid-template-columns:1fr;}
+    aside{border-left:none; border-top:1px solid var(--border); max-height:none; overflow:visible;} }
 </style>
 </head>
 <body>
@@ -246,6 +262,17 @@
   </div>
 
   <aside>
+    <div class="tabbar">
+      <button class="tabbtn" data-tab="read">Read</button>
+      <button class="tabbtn active" data-tab="alerts">Alerts <span id="tab-dot"></span></button>
+      <button id="readnow" title="Score the live, still-forming bar">Read current bar</button>
+    </div>
+
+    <div class="tabpane" data-pane="read" hidden>
+      <div id="readout"><div class="empty">Click any bar on the chart — this panel scores it right here, next to the chart: which way the evidence leans, what the same look has done before, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next.</div></div>
+    </div>
+
+    <div class="tabpane" data-pane="alerts">
     <h2>Alerts — fire on bar close only</h2>
     <div id="alertopts">
       <label><input type="checkbox" id="opt-squeeze" checked> Squeeze release (+ direction)</label>
@@ -260,12 +287,8 @@
     </div>
     <h2>Signal log</h2>
     <div id="alertlog"><div class="empty">No signals yet. Alerts only fire when a bar closes with the setup confirmed — that's the point: you don't have to watch.</div></div>
+    </div>
   </aside>
-
-  <section id="read">
-    <h2>Read a spot <span class="hint">— click anywhere on the chart, or</span> <button id="readnow">Read the current bar</button></h2>
-    <div id="readout"><div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div></div>
-  </section>
 
   <section id="journal">
     <h2>Trade journal <span class="hint">— saved in this browser · <a href="#" id="jexport">export</a> · <a href="#" id="jimport">import</a></span></h2>
@@ -853,6 +876,8 @@ function fireAlert(type, barIdx, dir, text){
     `<div>${esc(S.symbol)} ${S.tf} — ${text}</div>`;
   log.prepend(el);
   while (log.children.length > 60) log.lastChild.remove();
+  const alertsPane = document.querySelector('.tabpane[data-pane="alerts"]');
+  if (alertsPane && alertsPane.hidden) $("tab-dot").classList.add("on");
   if ($("opt-sound").checked) beep(dir);
   if ("Notification" in window && Notification.permission === "granted"){
     try { new Notification(`${S.symbol} ${S.tf}`, { body: text, silent: true }); } catch(e){}
@@ -1945,7 +1970,7 @@ $("verdictbar").onclick = () => {
   const idx = S.candles.findIndex(b => b.t === S.liveReadT);
   if (idx < 0) return;
   S.selT = S.liveReadT; draw(); renderRead(idx);
-  $("read").scrollIntoView({ behavior:"smooth" });
+  showTab("read");
 };
 
 function resample(cs, f){
@@ -2142,6 +2167,15 @@ function renderRead(i){
   };
 }
 
+/* The read docks beside the chart instead of below it — clicking a bar must
+   never scroll the chart out of view. */
+function showTab(name){
+  document.querySelectorAll(".tabbtn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tabpane").forEach(p => { p.hidden = p.dataset.pane !== name; });
+  if (name === "alerts") $("tab-dot").classList.remove("on");
+}
+document.querySelectorAll(".tabbtn").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
 canvas.addEventListener("click", e => {
   if (!S.view || !S.candles.length) return;
   const r = canvas.getBoundingClientRect();
@@ -2151,12 +2185,12 @@ canvas.addEventListener("click", e => {
   S.selT = S.candles[idx].t;
   draw();
   renderRead(idx);
-  $("read").scrollIntoView({ behavior:"smooth", block:"nearest" });
+  showTab("read");
 });
 $("readnow").onclick = () => {
   if (!S.candles.length) return;
   const i = S.candles.length - 1;   // the live, still-forming bar — what "current" means
-  S.selT = S.candles[i].t; draw(); renderRead(i);
+  S.selT = S.candles[i].t; draw(); renderRead(i); showTab("read");
 };
 
 /* ============================== trade journal ============================== */
