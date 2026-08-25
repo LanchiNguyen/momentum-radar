@@ -70,6 +70,18 @@
   #status{font-size:12px; color:var(--muted);}
   #status.live{color:var(--good);}
   #status.err{color:var(--down);}
+  #verdictbar{display:flex; align-items:center; gap:12px; padding:7px 16px; background:var(--panel);
+    border-bottom:1px solid var(--border); cursor:pointer; flex-wrap:wrap; user-select:none;}
+  #verdictbar:hover{filter:brightness(1.03);}
+  .vb-badge{font-size:13px; font-weight:800; letter-spacing:.3px;}
+  .vb-badge.long{color:var(--up);} .vb-badge.short{color:var(--down);} .vb-badge.none{color:var(--muted);}
+  .meter.mini{width:130px; height:8px; margin:0; flex:none;}
+  .meter.mini .mneedle{top:-2px; bottom:-2px; width:3px;}
+  #vb-chips{display:flex; gap:6px; flex-wrap:wrap;}
+  #vb-chips .chip{font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--border); color:var(--muted); white-space:nowrap;}
+  #vb-chips .chip.pro{color:var(--up); border-color:var(--up);}
+  #vb-chips .chip.con{color:var(--down); border-color:var(--down);}
+  #vb-when{margin-left:auto;}
   main{display:grid; grid-template-columns:1fr 320px; gap:0;}
   #chartwrap{position:relative; min-width:0;}
   #chart{display:block; width:100%; cursor:crosshair;}
@@ -130,6 +142,8 @@
   .scale{font-size:12px; color:var(--muted); margin:6px 0 2px; line-height:1.5;}
   .scale b{color:var(--text); font-size:14px;}
   .scale .bands{display:block; font-size:11px; opacity:.8;}
+  .fsilent summary{cursor:pointer; font-size:12px; color:var(--muted); padding:7px 0; list-style-position:inside;}
+  .fsilent summary:hover{color:var(--text);}
   .ftotal{margin-top:8px; padding-top:8px; border-top:1px solid var(--border);
     font-size:12px; color:var(--muted); text-align:right;}
   .ftotal b{color:var(--text); font-size:13px;}
@@ -165,9 +179,12 @@
   #learn{grid-column:1 / -1; border-top:1px solid var(--border); padding:22px 18px 30px; background:var(--panel);}
   #learn h2{font-size:15px; margin-bottom:4px;}
   #learn > p{color:var(--muted); max-width:820px; margin-bottom:16px;}
-  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;}
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; align-items:start;}
   .card{background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px 16px;}
   .card h3{font-size:13px; margin-bottom:6px; color:var(--accent);}
+  #learn details.card summary{cursor:pointer; font-size:13px; font-weight:700; color:var(--accent); list-style-position:inside;}
+  #learn details.card summary:hover{filter:brightness(1.15);}
+  #learn details.card[open] summary{margin-bottom:8px;}
   .card p, .card li{font-size:13px; color:var(--text);}
   .card ul{padding-left:18px; margin-top:4px;}
   .card .why{color:var(--muted); font-size:12px; margin-top:8px;}
@@ -214,6 +231,13 @@
   <div id="livebox"><span class="pulse"></span><span id="clock">—</span></div>
   <span id="status">connecting…</span>
 </header>
+
+<div id="verdictbar" title="Click for the full read">
+  <span class="vb-badge none" id="vb-badge">warming up…</span>
+  <div class="meter mini"><div class="mtick"></div><div class="mneedle" id="vb-needle" style="left:50%"></div></div>
+  <span id="vb-chips"></span>
+  <span class="hint" id="vb-when"></span>
+</div>
 
 <main>
   <div id="chartwrap">
@@ -277,8 +301,7 @@
     <h2>How to read this</h2>
     <p>Your entries fail when you buy hope inside chop. Every alert here encodes the same rule: <b>compression tells you a move is loading, volume tells you the move is real, and only the combination is an entry.</b> No signal, no trade — let the tool watch the chart so you don't.</p>
     <div class="cards">
-      <div class="card">
-        <h3>Squeeze (the "about to move" indicator)</h3>
+      <details class="card"><summary>Squeeze (the "about to move" indicator)</summary>
         <p>The middle panel is a TTM-style squeeze. Consolidation is volatility compression: Bollinger Bands (2σ) shrink inside Keltner Channels (1.5 ATR).</p>
         <ul>
           <li><b>Red dots</b> on the zero line = squeeze ON. Energy is loading. Do <b>not</b> enter here — this is exactly where theta eats your premium while price goes nowhere.</li>
@@ -286,9 +309,8 @@
           <li>The histogram gives direction: above zero and brightening = up momentum, below zero and brightening = down.</li>
         </ul>
         <p class="why">This is the answer to "when will price actually move": you can't know when, but the squeeze tells you the market is coiled, so you wait for the release instead of guessing inside the coil.</p>
-      </div>
-      <div class="card">
-        <h3>RVOL (the fakeout filter)</h3>
+      </details>
+      <details class="card"><summary>RVOL (the fakeout filter)</summary>
         <p>Relative volume = this bar's volume ÷ its 20-bar average. It is the single best fakeout filter.</p>
         <ul>
           <li>Breakout on RVOL &lt; 1 → probably a fakeout. Skip it.</li>
@@ -296,9 +318,8 @@
           <li>Volume should <b>lead or confirm</b> the break, not show up two bars late.</li>
         </ul>
         <p class="why">"When I enter with momentum I'm usually right" — RVOL is how you quantify momentum instead of feeling it, so you can also see when it's absent.</p>
-      </div>
-      <div class="card">
-        <h3>Volume profile (where price can run)</h3>
+      </details>
+      <details class="card"><summary>Volume profile (where price can run)</summary>
         <p>The histogram on the right edge of the chart shows how much volume traded at each price over the visible window.</p>
         <ul>
           <li><b>POC</b> (orange line) = the fairest price. Price gets magnetized back to it in chop.</li>
@@ -306,18 +327,16 @@
           <li><b>Thin zones</b> (short bars) = low-volume nodes. Price moves <b>fast</b> through them — a break into a thin zone has room to run; a break into a thick node will stall.</li>
         </ul>
         <p class="why">Before entering, check what's above/below: squeeze release + thin profile ahead = the good trade. Release straight into a fat node = take profits early or skip.</p>
-      </div>
-      <div class="card">
-        <h3>VWAP + Stoch RSI (your tools, with rules)</h3>
+      </details>
+      <details class="card"><summary>VWAP + Stoch RSI (your tools, with rules)</summary>
         <p>Keep using them — but as filters, not triggers.</p>
         <ul>
           <li>VWAP (orange curve) = the session's average price. Longs above, shorts below; a reclaim/loss <b>on RVOL</b> is a trend signal, a cross on dead volume is noise.</li>
           <li>Stoch RSI (bottom panel) times entries <b>within</b> a trend: in an uptrend, buy the %K hook up from &lt;20; don't short "overbought" in a strong trend — it stays pinned.</li>
         </ul>
         <p class="why">Stoch RSI alone can't tell consolidation from trend — that's why it's been trapping you. Squeeze + RVOL decide <i>if</i>; Stoch RSI and VWAP decide <i>where</i>.</p>
-      </div>
-      <div class="card">
-        <h3>ATR — the size of a normal move</h3>
+      </details>
+      <details class="card"><summary>ATR — the size of a normal move</summary>
         <p>Average True Range = the average size of one bar, in dollars. That's all it is. It matters because it converts everything into "is this normal?":</p>
         <ul>
           <li><b>Stops:</b> a stop closer than ~1 ATR is inside random noise — you'll be stopped out by nothing. Put it beyond 1 ATR and behind a level.</li>
@@ -325,9 +344,8 @@
           <li><b>Regime:</b> a bar suddenly 1.5× its recent average range = the market woke up (that's the range-expansion alert).</li>
         </ul>
         <p class="why">You don't compute it — the tool does. You just need the idea: measure moves in ATRs, not in hopes.</p>
-      </div>
-      <div class="card">
-        <h3>FVG — fair value gaps (the shaded boxes)</h3>
+      </details>
+      <details class="card"><summary>FVG — fair value gaps (the shaded boxes)</summary>
         <p>A 3-bar imbalance: price moved so fast that bar 1's range never overlaps bar 3's — the band in between traded almost no volume. The chart shows unfilled ones as shaded boxes.</p>
         <ul>
           <li>Price often comes back to "fill" the gap — a green (bullish) box below price is a magnet-then-support zone; a red box above is a magnet-then-resistance zone.</li>
@@ -335,9 +353,8 @@
           <li>A gap that keeps rejecting price = strong; a gap sliced through without pause = the move behind it is dead.</li>
         </ul>
         <p class="why">FVGs and volume profile agree with each other: both mark where almost nothing traded — and price moves fast through those zones and reverses at their edges.</p>
-      </div>
-      <div class="card">
-        <h3>RSI: which days it works (and which it wrecks you)</h3>
+      </details>
+      <details class="card"><summary>RSI: which days it works (and which it wrecks you)</summary>
         <p>"Overbought" does not mean "about to fall." In a real trend RSI pins above 80 for hours — fading it is how RSI loses you money. The rule is regime first:</p>
         <ul>
           <li><b>Chop day</b> (price crossing VWAP over and over, going nowhere): RSI extremes work — fade 80 back toward VWAP/POC, buy 20.</li>
@@ -345,9 +362,8 @@
           <li><b>Timeframes:</b> the higher timeframe is the dog, yours is the tail. 45m pointing down + 5m bouncing = a bounce to short into, not a reversal. Trade the small frame only in the big frame's direction — the spot-read shows both.</li>
         </ul>
         <p class="why">The "Day character" row in the spot read makes this call for you — that's why some days "trading purely off RSI" works and other days it doesn't: it was never RSI, it was the day type.</p>
-      </div>
-      <div class="card">
-        <h3>Volume profile, the 60-second course</h3>
+      </details>
+      <details class="card"><summary>Volume profile, the 60-second course</summary>
         <p>The sideways histogram = how much traded at each <i>price</i> (not each time). Three things to read off it:</p>
         <ul>
           <li><b>POC</b> (orange dashes) — the single price with the most volume. It's where buyers and sellers agreed most, so in quiet conditions price gravitates back to it. Far from POC = stretched; at POC = fair, no edge.</li>
@@ -355,9 +371,8 @@
           <li><b>Thin shelves</b> (short bars) — prices nobody accepted. Price slips through them fast (good for targets beyond them) and finds nothing to stand on (bad places for stops).</li>
         </ul>
         <p class="why">Practical loop: before entering, ask "where's the next thick node?" — that's your realistic target — and "is a thin shelf in the way?" — that's your acceleration zone. After a big move up, price consolidating ON TOP of a fat node it just built = healthy flag; consolidating on thin air = prone to slipping back.</p>
-      </div>
-      <div class="card">
-        <h3>The checklist (this is the actual edge)</h3>
+      </details>
+      <details class="card"><summary>The checklist (this is the actual edge)</summary>
         <p>Only enter when a closed bar gives you all of:</p>
         <ul>
           <li>Squeeze just released (or clean level break) — not mid-chop.</li>
@@ -366,7 +381,7 @@
           <li>Thin volume profile ahead, fat node behind (your stop hides behind it).</li>
         </ul>
         <p class="why">If you're buying options: entering during a squeeze = paying theta to wait. Entering on the release = the move pays for the premium. The waiting problem isn't discipline, it's having no objective trigger — now the trigger pings you.</p>
-      </div>
+      </details>
     </div>
   </section>
 </main>
@@ -1136,6 +1151,8 @@ function updateCone(){
   }
   let cond = null, lean = 0;
   const a = analyzeBar(li);
+  S.liveRead = a; S.liveReadT = cs[li].t;
+  renderVerdictBar();
   if (a){ lean = a.lean;
     if (a.lean !== 0){
       const mh = matchedHistory(li);
@@ -1506,6 +1523,7 @@ async function start(){
   disconnectWS();
   S.firedKeys.clear(); S.selT = null; S.lastAlertT = 0;
   S.cone = null; S.levels = null; S.levelsKey = null;
+  S.liveRead = null; S.liveReadT = null; renderVerdictBar();
   const ro = $("readout");
   if (ro) ro.innerHTML = '<div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div>';
   try{
@@ -1851,6 +1869,44 @@ function analyzeBar(i, lite){
   return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, lvl, keyLevels, tapeDir, tapeConflict };
 }
 
+/* the ambient read: what the tool thinks RIGHT NOW, always visible, refreshed
+   on every bar close — no clicking needed */
+function renderVerdictBar(){
+  const badge = $("vb-badge"); if (!badge) return;
+  const a = S.liveRead;
+  if (!a){
+    badge.textContent = "warming up…"; badge.className = "vb-badge none";
+    $("vb-chips").innerHTML = ""; $("vb-when").textContent = ""; return;
+  }
+  let cls = "none", txt;
+  if (a.squeezeOn && a.tapeDir === 0) txt = "NO TRADE — squeeze ON";
+  else if (a.stalled) txt = "RANGE-BOUND";
+  else if (a.lean === 0) txt = "NO EDGE";
+  else { cls = a.lean > 0 ? "long" : "short";
+         txt = `LEANS ${a.lean > 0 ? "UP" : "DOWN"} · ${Math.abs(a.score) >= 5 ? "strong" : "modest"}`; }
+  badge.textContent = txt; badge.className = "vb-badge " + cls;
+  $("vb-needle").style.left = Math.max(2, Math.min(98, (a.score + a.ceiling) / (2*a.ceiling) * 100)) + "%";
+  const chip = (t, c) => `<span class="chip ${c || ""}">${t}</span>`;
+  const dayF = a.factors.find(f => f.name === "Day character");
+  const day = dayF ? (dayF.note.startsWith("TREND") ? "trend day" : dayF.note.startsWith("CHOP") ? "chop day" : "mixed day") : null;
+  const li = S.candles.findIndex(b => b.t === S.liveReadT);
+  const rv = li >= 0 && S.ind ? S.ind.rvol[li] : NaN;
+  $("vb-chips").innerHTML =
+    chip(`tape ${a.tapeDir > 0 ? "▲" : a.tapeDir < 0 ? "▼" : "·"}`, a.tapeDir > 0 ? "pro" : a.tapeDir < 0 ? "con" : "") +
+    chip(a.squeezeOn ? "squeeze ON" : "squeeze off") +
+    (isFinite(rv) ? chip(`RVOL ${rv.toFixed(1)}`, rv >= 1.5 ? "pro" : "") : "") +
+    (day ? chip(day) : "") +
+    (a.tapeConflict ? chip("⚠ tape against lean", "con") : "");
+  $("vb-when").textContent = `as of the ${etHM(S.liveReadT)} close — click for the full read`;
+}
+$("verdictbar").onclick = () => {
+  if (S.liveReadT == null) return;
+  const idx = S.candles.findIndex(b => b.t === S.liveReadT);
+  if (idx < 0) return;
+  S.selT = S.liveReadT; draw(); renderRead(idx);
+  $("read").scrollIntoView({ behavior:"smooth" });
+};
+
 function resample(cs, f){
   // epoch-anchored buckets (f × the current tf), so "the 1h trend" means real
   // clock hours and doesn't re-bucket as old bars fall off the front
@@ -1958,7 +2014,12 @@ function renderRead(i){
       <div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). A target much beyond the next level needs the level to break first.</div></div>`;
   }
 
-  const fHtml = a.factors.map(f => {
+  // biggest votes first; factors with nothing to say fold into one line
+  const pinned = a.factors.filter(f => !f.pts && f.name === "Right now");
+  const voting = a.factors.filter(f => f.pts !== 0);
+  voting.sort((x,y) => Math.abs(y.pts) - Math.abs(x.pts));
+  const silent = a.factors.filter(f => !f.pts && f.name !== "Right now");
+  const factorRow = f => {
     const mark = f.dir > 0 ? "▲" : f.dir < 0 ? "▼" : "•";
     const cls  = f.dir > 0 ? "pro" : f.dir < 0 ? "con" : "neu";
     let bar = '<div class="pbar off"><span>no stat</span></div>';
@@ -1979,7 +2040,9 @@ function renderRead(i){
       <div><div class="fname">${f.name}</div><div class="fnote">${f.note}</div></div>
       <div class="fedge">${bar}</div>
     </div>`;
-  }).join("");
+  };
+  const fHtml = pinned.map(factorRow).join("") + voting.map(factorRow).join("") +
+    (silent.length ? `<details class="fsilent"><summary>${silent.length} factor${silent.length===1?"":"s"} with no vote — tap to see why</summary>${silent.map(factorRow).join("")}</details>` : "");
 
   // clicking a historical bar reveals what actually happened — practice mode
   let revealHtml = "";
