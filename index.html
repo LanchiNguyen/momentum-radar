@@ -382,6 +382,7 @@ const S = {
   lastDraw: 0,          // throttle for tick-driven redraws
   lastDataAt: 0,        // wall time of the last real data update (poll or tick)
   cone: null,           // cached projection quantiles, rebuilt when a bar closes
+  loadGen: 0,           // increments per start(); stale async work checks it
 };
 const TF_MS = { "1m":60e3, "3m":180e3, "5m":300e3, "15m":900e3, "30m":18e5, "45m":27e5, "1h":36e5, "2h":72e5 };
 
@@ -511,18 +512,25 @@ const ET_TZ = "America/New_York";
 const etFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, hour12:false,
   year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit" });
 const etZoneFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, timeZoneName:"short" });
+const _etPartsCache = new Map();   // bar timestamps are stable, so this is a pure win
 function etParts(ms){
-  const p = {};
+  if (!isFinite(ms)) return null;               // a bad timestamp must never throw mid-render
+  let p = _etPartsCache.get(ms);
+  if (p) return p;
+  p = {};
   for (const x of etFmt.formatToParts(new Date(ms))) if (x.type !== "literal") p[x.type] = x.value;
   if (p.hour === "24") p.hour = "00";            // some engines emit hour 24
+  if (_etPartsCache.size > 4000) _etPartsCache.clear();
+  _etPartsCache.set(ms, p);
   return p;
 }
-function etHM(ms){ const p = etParts(ms); return `${p.hour}:${p.minute}`; }
-function etHMS(ms){ const p = etParts(ms); return `${p.hour}:${p.minute}:${p.second}`; }
-function etStamp(ms){ const p = etParts(ms); return `${+p.month}/${+p.day} ${p.hour}:${p.minute}`; }
-function etDayKey(ms){ const p = etParts(ms); return p.year + p.month + p.day; }
+function etHM(ms){ const p = etParts(ms); return p ? `${p.hour}:${p.minute}` : "—"; }
+function etHMS(ms){ const p = etParts(ms); return p ? `${p.hour}:${p.minute}:${p.second}` : "—"; }
+function etStamp(ms){ const p = etParts(ms); return p ? `${+p.month}/${+p.day} ${p.hour}:${p.minute}` : "—"; }
+function etDayKey(ms){ const p = etParts(ms); return p ? p.year + p.month + p.day : "invalid"; }
 function etZone(ms){
-  const x = etZoneFmt.formatToParts(new Date(ms == null ? Date.now() : ms)).find(y => y.type === "timeZoneName");
+  if (ms == null || !isFinite(ms)) ms = Date.now();
+  const x = etZoneFmt.formatToParts(new Date(ms)).find(y => y.type === "timeZoneName");
   return x ? x.value : "ET";
 }
 
@@ -694,8 +702,9 @@ function updateLevels(){
   if (!cs.length || !S.ind){ S.levels = null; return; }
   let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
   if (li < 40){ S.levels = null; return; }
-  if (S.levelsAt === cs[li].t && S.levelsLen === cs.length) return;
-  S.levelsAt = cs[li].t; S.levelsLen = cs.length;
+  const key = S.symbol + "|" + S.tf;
+  if (S.levelsKey === key && S.levelsAt === cs[li].t && S.levelsLen === cs.length) return;
+  S.levelsKey = key; S.levelsAt = cs[li].t; S.levelsLen = cs.length;
   S.levels = findLevels(cs, li, S.ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
 }
 
@@ -839,11 +848,12 @@ function sourceOrder(){
   return looksCrypto(S.symbol) ? [...crypto, ...stocks] : [...stocks, ...crypto];
 }
 
-async function loadHistory(){
+async function loadHistory(gen){
   const tried = [];
   const list = sourceOrder();
   if (!list.length) throw new Error("no source available — check the source dropdown / stock key");
   for (const src of list){
+    if (gen !== undefined && gen !== S.loadGen) throw new Error("superseded");
     if (src.needsKey && !getTdKey()){ tried.push(`${src.label}: needs your free API key (paste it in the header)`); continue; }
     const plan = planFor(src.id, S.tf);
     if (!plan){ tried.push(`${src.label}: no ${S.tf} data`); continue; }
@@ -851,6 +861,7 @@ async function loadHistory(){
     setStatus(`trying ${src.label} · ${sym}…`);
     try{
       const res = await fetch(src.rest(sym, plan.param, 500 * plan.factor), { cache:"no-store" });
+      if (gen !== undefined && gen !== S.loadGen) throw new Error("superseded");
       let body = null; try { body = await res.json(); } catch(e){}
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
@@ -929,7 +940,10 @@ function coinbaseAttach(ws, sym, tf){
     if (steps === 0){
       last.h = Math.max(last.h, px); last.l = Math.min(last.l, px);
       last.c = px; last.v += size;
-      refresh(false);
+      // throttled like the Finnhub path — a busy ticker must not run the full
+      // indicator recompute per trade
+      const now = performance.now();
+      if (now - S.lastDraw > 200){ S.lastDraw = now; refresh(false); }
     } else {
       last.closed = true; refresh(true);                 // close the old bar, fire alerts
       cs.push({ t:last.t + steps*ms, o:px, h:px, l:px, c:px, v:size, closed:false });
@@ -996,7 +1010,7 @@ function disconnectTicks(){
    merge them onto the chart. Alerts still fire only when a bar rolls over. */
 async function pollOnce(){
   const src = S.source;
-  if (!src || !src.poll) return;
+  if (!src || !(src.poll || (S.plan && S.plan.factor > 1))) return;
   try{
     const plan = S.plan || { param:S.tf, factor:1 };
     const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)), { cache:"no-store" });
@@ -1065,7 +1079,8 @@ function updateCone(){
   if (!cs.length){ S.cone = null; return; }
   let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
   if (li < 80){ S.cone = null; return; }
-  if (S.cone && S.cone.t === cs[li].t && S.cone.len === cs.length) return;   // still current
+  const key = S.symbol + "|" + S.tf;
+  if (S.cone && S.cone.key === key && S.cone.t === cs[li].t && S.cone.len === cs.length) return;   // still current
   const H = 20, qs = [null];
   for (let h = 1; h <= H; h++){
     const mv = [];
@@ -1082,7 +1097,7 @@ function updateCone(){
       if (mh.n >= 8 && isFinite(mh.medEnd)) cond = { medEnd: mh.medEnd, n: mh.n };
     }
   }
-  S.cone = { t: cs[li].t, len: cs.length, H, qs, cond, lean, samples: li - 1 };
+  S.cone = { key: S.symbol + "|" + S.tf, t: cs[li].t, len: cs.length, base: li, H, qs, cond, lean };
 }
 
 function draw(){
@@ -1396,7 +1411,7 @@ function draw(){
     const q = cone.qs[ahead];
     lg.textContent =
       `PROJECTION · by ${etHM(td.getTime())} ${etZone()} (${ahead} bar${ahead>1?"s":""} ahead)\n` +
-      `50% of ${cone.samples} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
+      `50% of ${cone.base - ahead + 1} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
       `80% ended ${fmtPx(anchor+q[0])} – ${fmtPx(anchor+q[4])}` +
       (cone.cond ? `\nmedian of ${cone.cond.n} bars matching this setup: ${fmtPx(anchor + cone.cond.medEnd*(ahead/cone.H))}` : "");
   } else if (S.mouse && S.mouse.x < plotW){
@@ -1430,14 +1445,23 @@ function pad2(x){ return String(x).padStart(2,"0"); }
 
 /* ============================== wiring ============================== */
 async function start(){
+  // generation token: a slow, superseded load must never touch state that a
+  // newer load already owns — no wiping a working chart, no tearing down the
+  // winner's sockets
+  const gen = ++S.loadGen;
   disconnectWS();
   S.firedKeys.clear(); S.selBar = null;
+  S.cone = null; S.levels = null; S.levelsKey = null;
+  const ro = $("readout");
+  if (ro) ro.innerHTML = '<div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div>';
   try{
-    await loadHistory();
+    await loadHistory(gen);
+    if (gen !== S.loadGen) return;
     refresh(false);
     connectWS();
     connectTicks();
   }catch(e){
+    if (gen !== S.loadGen) return;
     setStatus("No feed — " + e.message, "err");
     S.candles = []; draw();
   }
@@ -1572,10 +1596,13 @@ function analyzeBar(i){
 
   // fraction of history bars sharing a feature that then closed in that
   // feature's direction 10 bars later — the honest version of "percentages"
+  // strictly causal: only bars whose 10-bar outcome had fully resolved BEFORE
+  // bar i may be counted, so a click on a historical bar quotes only numbers
+  // that were knowable at that bar
   const pctFor = (cond, dir) => {
     let n = 0, hit = 0;
-    for (let j = 45; j <= cs.length - 12; j++){
-      if (j === i || !cond(j)) continue;
+    for (let j = 45; j <= i - 11; j++){
+      if (!cond(j)) continue;
       n++; if (dir * (cs[j+10].c - cs[j].c) > 0) hit++;
     }
     return n >= 10 ? { pct: Math.round(100*hit/n), n } : null;
@@ -1775,8 +1802,8 @@ function matchedHistory(i){
   const dir = ind.mom[i] >= 0 ? 1 : -1;
   const fav = [], adv = [], ends = [];
   let n = 0, wins = 0;
-  for (let j = 45; j <= cs.length - 22; j++){
-    if (j === i || signature(j) !== sig) continue;
+  for (let j = 45; j <= i - 21; j++){          // causal: outcomes resolved before bar i only
+    if (signature(j) !== sig) continue;
     const a = ind.atr[j]; if (!a) continue;
     const e = cs[j].c;
     let win = null, maxF = 0, maxA = 0;
@@ -1987,7 +2014,7 @@ $("jform").addEventListener("submit", e => {
   };
   const all = jLoad(); all.unshift(trade); jSave(all);
   $("jform").reset(); $("j-entry").value = "";
-  jRender();
+  try { jRender(); } catch(e){ console.error("journal render failed:", e); }   // the journal must never kill the chart
 });
 
 function jClose(id){
@@ -2081,7 +2108,14 @@ $("jimport").onclick = e => {
       const arr = JSON.parse(txt);
       if (!Array.isArray(arr)) throw new Error("not a journal file");
       const cur = jLoad(), ids = new Set(cur.map(t => t.id));
-      arr.forEach(t => { if (t && t.id && !ids.has(t.id)) cur.push(t); });
+      // one malformed record must never poison the stored journal
+      let dropped = 0;
+      arr.forEach(t => {
+        const ok = t && typeof t.id === "number" && isFinite(new Date(t.openedAt).getTime()) && isFinite(+t.entry);
+        if (!ok){ dropped++; return; }
+        if (!ids.has(t.id)) cur.push(t);
+      });
+      if (dropped) alert(dropped + " record(s) in that file were malformed and were skipped.");
       cur.sort((a,b) => b.id - a.id);
       jSave(cur); jRender();
     }catch(err){ alert("Couldn't import: " + err.message); }
