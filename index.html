@@ -1879,14 +1879,34 @@ function analyzeBar(i, lite){
 
   // compression vetoes (squeeze, barcode) only hold while the tape is quiet —
   // both are computed from past bars and go stale the moment price travels
-  const lean = ((ind.squeeze[i] && tapeDir === 0) || stalled) ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
+  let lean = ((ind.squeeze[i] && tapeDir === 0) || stalled) ? 0 : score >= 2 ? 1 : score <= -2 ? -1 : 0;
+
+  // Never chase into a tested wall. Trend factors agree loudest right after a
+  // move — which lands the "strong" lean exactly at the level everyone else is
+  // selling into. If the lean points INTO a nearby, repeatedly-rejected level,
+  // the setup is the level's resolution (break or rejection), not the approach.
+  // The backtest agrees: stacked-conviction leans measured WORSE than modest
+  // ones, and this is the mechanism.
+  let wall = null;
+  if (atr > 0 && keyLevels){
+    const res = keyLevels.res, sup = keyLevels.sup;
+    if (lean === 1 && res && res.rej >= 3 && res.price - c.c <= 1.0*atr)
+      wall = { side: "ceiling", price: res.price, touches: res.touches, rej: res.rej, dist: res.price - c.c };
+    else if (lean === -1 && sup && sup.rej >= 3 && c.c - sup.price <= 1.0*atr)
+      wall = { side: "floor", price: sup.price, touches: sup.touches, rej: sup.rej, dist: c.c - sup.price };
+    if (wall){
+      factors.unshift({ dir:0, w:0, pts:0, name:"Right now",
+        note:`INTO A TESTED WALL — the evidence leans ${lean > 0 ? "up" : "down"}, but it points straight into a ${wall.side} rejected ${wall.rej}× recently, only $${fmtPx(wall.dist)} away. Chasing an approach into a wall is how tops get bought; wait for the close through it, or the rejection.` });
+      lean = 0;
+    }
+  }
   const tapeConflict = lean !== 0 && tapeDir !== 0 && tapeDir !== lean;
   // the most this set of factors could have scored if every one voted the same
   // way — the denominator that makes the raw total mean something
   const ceiling = factors.reduce((t,f) => t + (POTENTIAL[f.name] ?? (f.name.startsWith("Bigger picture") ? 2 : 1)), 0);
   const tally = { up: factors.filter(f=>f.pts>0).length, down: factors.filter(f=>f.pts<0).length,
                   flat: factors.filter(f=>!f.pts).length };
-  return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, lvl, keyLevels, tapeDir, tapeConflict };
+  return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, wall, lvl, keyLevels, tapeDir, tapeConflict };
 }
 
 /* the ambient read: what the tool thinks RIGHT NOW, always visible, refreshed
@@ -1900,6 +1920,7 @@ function renderVerdictBar(){
   }
   let cls = "none", txt;
   if (a.squeezeOn && a.tapeDir === 0) txt = "NO TRADE — squeeze ON";
+  else if (a.wall) txt = `AT A TESTED WALL ($${fmtPx(a.wall.price)})`;
   else if (a.stalled) txt = "RANGE-BOUND";
   else if (a.lean === 0) txt = "NO EDGE";
   else { cls = a.lean > 0 ? "long" : "short";
@@ -1980,6 +2001,9 @@ function renderRead(i){
   if (a.squeezeOn && a.tapeDir === 0){
     verdictTxt = "NO TRADE — squeeze is ON";
     verdictSub = "The chart is coiling. Entering here is paying theta to wait. The alert will fire when it releases.";
+  } else if (a.wall){
+    verdictTxt = `AT A TESTED WALL — don't chase`;
+    verdictSub = `The evidence points into a ${a.wall.side} the market has rejected ${a.wall.rej}× recently ($${fmtPx(a.wall.price)}, $${fmtPx(a.wall.dist)} away). This is where chases die: the trade is the level's resolution — a close through it (the tested-break alert will fire), or the rejection back the other way — never the approach.`;
   } else if (a.stalled){
     verdictTxt = "RANGE-BOUND — barcoding";
     verdictSub = `Price is pinned in a $${fmtPx(a.stalled.top - a.stalled.bot)} box. Any lean here would be leftovers from the last move, so none is given. The trade is the break: above $${fmtPx(a.stalled.top)} or below $${fmtPx(a.stalled.bot)} on real volume — until then, nothing.`;
