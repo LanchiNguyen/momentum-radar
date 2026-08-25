@@ -2309,7 +2309,10 @@ async function runBacktest(){
   let bars = null, note = "";
   try{
     const plan = S.plan || { param: S.tf, factor: 1 };
-    const res = await fetch(S.source.rest(S.resolvedSym, plan.param, 5000 * plan.factor), { cache:"no-store" });
+    // Twelve Data caps outputsize at 5000 — asking for factor× that on a
+    // derived timeframe (3m = 1min×3) made the API refuse and the backtest
+    // silently fall back to the tiny loaded chart
+    const res = await fetch(S.source.rest(S.resolvedSym, plan.param, Math.min(5000, 5000 * plan.factor)), { cache:"no-store" });
     if (res.ok){
       let b = S.source.parse(await res.json());
       b = b.filter(x => isFinite(x.t) && isFinite(x.o) && isFinite(x.h) && isFinite(x.l) && isFinite(x.c));
