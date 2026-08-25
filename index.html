@@ -1116,8 +1116,14 @@ function layout(){
   const w = canvas.clientWidth || canvas.parentElement.clientWidth;
   const h = Math.max(520, Math.min(760, window.innerHeight - 220));
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = w*dpr; canvas.height = h*dpr; canvas.style.height = h+"px";
+  const bw = Math.round(w*dpr), bh = Math.round(h*dpr);
+  // assigning width/height drops and reallocates the pixel buffer — only do it
+  // when the size actually changed (draw runs per mousemove and per second)
+  if (canvas.width !== bw || canvas.height !== bh){
+    canvas.width = bw; canvas.height = bh; canvas.style.height = h + "px";
+  }
   ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
   return { w, h };
 }
 
@@ -1155,7 +1161,7 @@ function updateCone(){
   renderVerdictBar();
   if (a){ lean = a.lean;
     if (a.lean !== 0){
-      const mh = matchedHistory(li);
+      const mh = matchedHistory(li, a.lean);
       if (mh.n >= 8 && isFinite(mh.medEnd)) cond = { medEnd: mh.medEnd, n: mh.n };
     }
   }
@@ -1510,7 +1516,12 @@ function draw(){
     ctx.font = "11px sans-serif";
   }
 }
-function getCss(v){ return getComputedStyle(document.body).getPropertyValue(v).trim(); }
+let _cssCache = Object.create(null);   // cleared on theme change; ~650 lookups/frame otherwise
+function getCss(v){
+  let x = _cssCache[v];
+  if (x === undefined){ x = getComputedStyle(document.body).getPropertyValue(v).trim(); _cssCache[v] = x; }
+  return x;
+}
 function fmtPx(p){ return !isFinite(p) ? "—" : p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p === 0 ? "0.00" : p.toPrecision(5); }
 function pad2(x){ return String(x).padStart(2,"0"); }
 
@@ -1915,9 +1926,9 @@ function resample(cs, f){
 
 /* bars that looked the same (same signature): did ±1 ATR hit favorably first
    within 20 bars? Ambiguous same-bar hits count as losses — conservative. */
-function matchedHistory(i){
+function matchedHistory(i, dir){
   const cs = S.candles, ind = S.ind, sig = signature(i);
-  const dir = ind.mom[i] >= 0 ? 1 : -1;
+  if (dir === undefined) dir = ind.mom[i] >= 0 ? 1 : -1;   // legacy fallback
   const fav = [], adv = [], ends = [];
   let n = 0, wins = 0, unresolved = 0;
   for (let j = 45; j <= i - 21; j++){          // causal: outcomes resolved before bar i only
@@ -1954,7 +1965,7 @@ function renderRead(i){
       &nbsp;·&nbsp; ${a.tally.up} signal${a.tally.up===1?"":"s"} up, ${a.tally.down} down, ${a.tally.flat} no vote
       <span class="bands">0–1 = no edge&nbsp;·&nbsp;2–4 = modest&nbsp;·&nbsp;5+ = strong</span>
     </div>`;
-  const hist = a.lean !== 0 ? matchedHistory(i) : null;
+  const hist = a.lean !== 0 ? matchedHistory(i, a.lean) : null;   // scored in the direction the sentence claims
 
   let verdictCls = "none", verdictTxt, verdictSub;
   if (a.squeezeOn && a.tapeDir === 0){
@@ -2067,7 +2078,7 @@ function renderRead(i){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
-      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">${esc(S.symbol)} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)}</div>
       ${formingHtml}
       ${meterHtml}
       <div class="fline">${verdictSub}</div>
@@ -2475,6 +2486,7 @@ window.addEventListener("resize", draw);
    follows). The choice is remembered. */
 function applyTheme(t){
   document.body.classList.toggle("light", t === "light");
+  _cssCache = Object.create(null);
   $("themebtn").textContent = t === "light" ? "🌙" : "☀️";
   try { localStorage.setItem("theme", t); } catch(e){}
   draw();

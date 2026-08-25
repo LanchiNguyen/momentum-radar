@@ -31,7 +31,23 @@ notifications and leave the tab in the background:
 
 - Squeeze release, with direction and volume confirmation
 - Volume spike with range expansion
-- VWAP reclaim / loss on volume
+- VWAP reclaim / loss on volume (suppressed across the session open)
+- Level rejection: the Nth failed attempt at a tested price
+- Tested break: a close through a level the market probed 3+ times
+
+If the tab was throttled or the network stalled, alerts catch up over
+the bars that closed meanwhile instead of silently skipping them.
+
+## Backtest
+
+The "Does it actually work here?" section replays every bar of history
+through the exact scoring and alert code that runs live (no hindsight —
+levels and statistics are recomputed causally as the replay advances),
+then scores each signal by which of ±1 ATR hit first within 20 bars.
+It fetches up to ~5,000 bars for the current symbol/timeframe in one
+API call and reports hit rates against the honest baseline, a
+conviction-calibration check, per-factor lift, and per-alert outcomes —
+every number with its sample size, and small buckets refuse to quote.
 
 ## Running it
 
