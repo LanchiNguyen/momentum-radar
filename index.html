@@ -371,6 +371,7 @@ const S = {
   barsVisible: 160,
   ws: null,
   firedKeys: new Set(), // alert dedupe: type@barTime
+  selT: null,           // selected bar's timestamp (indices shift as bars evict)
   mouse: null,
   source: null,         // the SOURCES entry that actually answered
   resolvedSym: "",      // symbol in that source's own notation
@@ -619,8 +620,10 @@ function computeIndicators(cs){
     for (let j=i-13;j<=i;j++){ if(isNaN(rsi[j])){ok=false;break;} if(rsi[j]<mn)mn=rsi[j]; if(rsi[j]>mx)mx=rsi[j]; }
     if (ok) stoch[i] = mx===mn ? 50 : (rsi[i]-mn)/(mx-mn)*100;
   }
-  const stochK = sma(stoch.map(v=>isNaN(v)?0:v), 3).map((v,i)=> isNaN(stoch[i])?NaN:v);
-  const stochD = sma(stochK.map(v=>isNaN(v)?0:v), 3).map((v,i)=> isNaN(stochK[i])?NaN:v);
+  const sma3valid = a => a.map((v,i) =>
+    (i >= 2 && !isNaN(a[i]) && !isNaN(a[i-1]) && !isNaN(a[i-2])) ? (a[i]+a[i-1]+a[i-2])/3 : NaN);
+  const stochK = sma3valid(stoch);
+  const stochD = sma3valid(stochK);
 
   // session VWAP (resets each ET trading day, so it matches the US session)
   const vwap = new Array(N).fill(NaN);
@@ -726,12 +729,21 @@ function findFVGs(cs, upto, ind){
 }
 
 /* ============================== alerts ============================== */
+/* A poll can deliver several closed bars at once (throttled background tab,
+   network stall). Every closed bar since the last evaluated one gets scored,
+   capped at 12 of catch-up; dedupe keys make re-walks harmless. */
 function evaluateAlerts(){
+  const cs = S.candles;
+  if (!cs.length || !S.ind) return;
+  let last = cs.length-1; if (!cs[last].closed) last--;
+  if (last < 40) return;
+  let from = last;
+  while (from > 41 && S.lastAlertT && cs[from-1].t > S.lastAlertT && last - from < 12) from--;
+  for (let i = from; i <= last; i++) evaluateAlertsAt(i);
+  S.lastAlertT = cs[last].t;
+}
+function evaluateAlertsAt(i){
   const cs = S.candles, ind = S.ind;
-  if (!cs.length || !ind) return;
-  // last fully closed bar
-  let i = cs.length-1; if (!cs[i].closed) i--;
-  if (i < 40) return;
   const thr = parseFloat($("rvolthr").value) || 1.5;
   const rvol = ind.rvol[i], c = cs[i];
   const px = p => p >= 100 ? p.toFixed(2) : p.toPrecision(5);
@@ -786,7 +798,8 @@ function evaluateAlerts(){
   // 4) VWAP reclaim / loss on volume
   if ($("opt-vwap").checked && i > 0){
     const above = c.c > ind.vwap[i], wasAbove = cs[i-1].c > ind.vwap[i-1];
-    if (above !== wasAbove && rvol >= Math.max(1.3, thr-0.2)){
+    const sameSession = etDayKey(c.t) === etDayKey(cs[i-1].t);   // the reset itself is not a cross
+    if (sameSession && above !== wasAbove && rvol >= Math.max(1.3, thr-0.2)){
       fireAlert("vwap", i, above ? "up" : "down",
         `VWAP ${above ? "reclaimed" : "lost"} on RVOL ${rvol.toFixed(1)} · ${px(c.c)}`);
     }
@@ -832,7 +845,8 @@ function beep(dir){
    reported if every source is exhausted. */
 function looksCrypto(s){
   s = s.toUpperCase().trim();
-  return /(USDT|USDC)$/.test(s) || s.includes("-") ||
+  return /(USDT|USDC)$/.test(s) ||
+         /-(USD|USDT|USDC|EUR|GBP|BTC|ETH)$/.test(s) ||   // BTC-USD yes, BRK-B no
          /^(BTC|ETH|SOL|XRP|DOGE|ADA|LTC|BNB|AVAX|LINK)(USD)?$/.test(s);
 }
 
@@ -865,6 +879,7 @@ async function loadHistory(gen){
       let body = null; try { body = await res.json(); } catch(e){}
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
+      cs = cs.filter(b => isFinite(b.t) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c));
       if (plan.factor > 1) cs = resampleTf(cs, TF_MS[S.tf]);
       if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough ${S.tf} data for ${sym}`); continue; }
       S.candles = cs;
@@ -897,7 +912,13 @@ function connectWS(){
     if (S.ws !== ws) return;
     // history is already on screen; say so rather than implying the chart is dead
     setStatus(`${S.source.label} ${S.resolvedSym} · chart loaded, live stream reconnecting…`, "err");
-    setTimeout(()=>{ if (S.ws === ws) connectWS(); }, 3000);
+    setTimeout(async () => {
+      if (S.ws !== ws) return;
+      // bars that closed during the outage never came over the socket — refill
+      const gen = S.loadGen;
+      try { await loadHistory(gen); if (gen === S.loadGen) refresh(false); } catch(e){}
+      if (gen === S.loadGen && S.ws === ws) connectWS();
+    }, 3000);
   };
   ws.onerror = () => {};
 }
@@ -964,7 +985,7 @@ function disconnectWS(){
    authority on completed bars and volume. */
 function connectTicks(){
   disconnectTicks();
-  if (!getFhKey() || looksCrypto(S.symbol)) return;
+  if (!getFhKey() || (S.source && S.source.id !== "twelvedata")) return;   // ticks are for the stock feed
   let ws;
   try { ws = new WebSocket("wss://ws.finnhub.io?token=" + encodeURIComponent(getFhKey())); } catch(e){ return; }
   S.tickWs = ws;
@@ -1020,6 +1041,14 @@ async function pollOnce(){
     if (fresh.length > 1) fresh = fresh.slice(1);   // oldest bucket may be missing its early base bars
     if (!fresh.length) return;
     const cs = S.candles;
+    // a sleep/stall longer than the fetch window would splice bars across a
+    // hole and corrupt every windowed indicator — resync history instead
+    if (cs.length && fresh[0].t > cs[cs.length-1].t + TF_MS[S.tf]){
+      const gen = S.loadGen;
+      await loadHistory(gen);
+      if (gen === S.loadGen) refresh(false);
+      return;
+    }
     let closedAny = false;
     for (const b of fresh){
       const last = cs[cs.length-1];
@@ -1122,7 +1151,7 @@ function draw(){
   const F = coneOn ? Math.min(S.cone.H, Math.floor(S.barsVisible/4)) : 0;   // future slots
   const i1 = cs.length-1, i0 = Math.max(0, i1 - (S.barsVisible - F) + 1);
   const n = i1 - i0 + 1;
-  const axisW = 64, profW = Math.min(120, w*0.14);
+  const axisW = 64, profW = coneOn ? Math.min(72, w*0.08) : Math.min(120, w*0.14);
   const plotW = w - axisW;
   const bw = plotW / (n + F);
   const X = i => (i - i0 + 0.5) * bw;
@@ -1163,10 +1192,11 @@ function draw(){
   // volume profile (right edge of price panel)
   const vp = volumeProfile(cs, i0, i1, 40);
   if (vp){
+    const vpMax = vp.max || 1;
     for (let b=0; b<vp.bins.length; b++){
       const p0 = vp.lo + b*vp.bh, p1 = p0 + vp.bh;
       const y0 = Y(p1), y1 = Y(p0);
-      const len = (vp.bins[b]/vp.max) * profW;
+      const len = (vp.bins[b]/vpMax) * profW;
       const inVA = b >= vp.vaLo && b <= vp.vaHi;
       ctx.fillStyle = b === vp.poc ? getCss("--pocline") : inVA ? getCss("--vpfill2") : getCss("--vpfill");
       ctx.fillRect(plotW - len, y0, len, Math.max(1, y1-y0-1));
@@ -1195,7 +1225,7 @@ function draw(){
       ctx.setLineDash([]); ctx.lineWidth = 1;
       ctx.fillStyle = getCss("--panellabel");
       ctx.font = "10px sans-serif";
-      ctx.fillText(`×${L.touches}`, plotW - 26, yy - 3);
+      ctx.fillText(`×${L.touches}`, plotW - profW - 24, yy - 3);   // clear of the profile strip
       ctx.font = "11px sans-serif";
     }
   }
@@ -1205,8 +1235,10 @@ function draw(){
     for (const g of findFVGs(cs, i1, ind)){
       if (g.top < lo || g.bot > hi) continue;
       const x0 = g.born >= i0 ? X(g.born) : 0;
+      const x1 = coneOn ? X(i1) + bw/2 : plotW;      // don't paint into the cone's space
+      if (x1 <= x0) continue;
       ctx.fillStyle = g.dir > 0 ? getCss("--fvgup") : getCss("--fvgdn");
-      ctx.fillRect(x0, Y(g.top), plotW - x0, Math.max(1, Y(g.bot) - Y(g.top)));
+      ctx.fillRect(x0, Y(g.top), x1 - x0, Math.max(1, Y(g.bot) - Y(g.top)));
       ctx.fillStyle = getCss("--panellabel"); ctx.font = "9px sans-serif";
       ctx.fillText("FVG", Math.min(x0 + 3, plotW - 24), Y(g.top) + 9);
       ctx.font = "11px sans-serif";
@@ -1231,12 +1263,16 @@ function draw(){
     ctx.moveTo(Xf(0), Y(anchor));
     for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.qs[h][2]));
     ctx.stroke(); ctx.setLineDash([]);
-    if (cone.cond){
-      ctx.strokeStyle = cone.cond.medEnd >= 0 ? getCss("--up") : getCss("--down");
-      ctx.setLineDash([5,3]); ctx.lineWidth = 1.6; ctx.beginPath();
-      ctx.moveTo(Xf(0), Y(anchor));
-      for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.cond.medEnd * (h/cone.H)));
-      ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
+    // the matched-setup median is measured at ONE horizon (20 bars); drawing a
+    // path through intermediate hours would be inventing data — mark only the
+    // measured endpoint, and only when the cone actually reaches it
+    if (cone.cond && F === cone.H){
+      const col = cone.cond.medEnd >= 0 ? getCss("--up") : getCss("--down");
+      const ex = Xf(cone.H), ey = Y(anchor + cone.cond.medEnd);
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(ex, ey, 3.5, 0, 7); ctx.fill();
+      ctx.strokeStyle = col; ctx.setLineDash([2,3]);
+      ctx.beginPath(); ctx.moveTo(ex - 14, ey); ctx.lineTo(ex + 6, ey); ctx.stroke(); ctx.setLineDash([]);
     }
     // when does the cone end?
     const endD = new Date(cs[i1].t + F*TF_MS[S.tf]);
@@ -1270,11 +1306,12 @@ function draw(){
   }
 
   // clicked-bar marker (behind the candles)
-  if (S.selBar != null && S.selBar >= i0 && S.selBar <= i1){
+  const selIdx = S.selT != null ? cs.findIndex(b => b.t === S.selT) : -1;
+  if (selIdx >= i0 && selIdx <= i1){
     ctx.fillStyle = getCss("--selfill");
-    ctx.fillRect(X(S.selBar)-bw/2, 0, bw, h);
+    ctx.fillRect(X(selIdx)-bw/2, 0, bw, h);
     ctx.strokeStyle = getCss("--accent"); ctx.setLineDash([2,3]);
-    ctx.beginPath(); ctx.moveTo(X(S.selBar), 0); ctx.lineTo(X(S.selBar), h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(selIdx), 0); ctx.lineTo(X(selIdx), h); ctx.stroke();
     ctx.setLineDash([]);
   }
 
@@ -1413,7 +1450,7 @@ function draw(){
       `PROJECTION · by ${etHM(td.getTime())} ${etZone()} (${ahead} bar${ahead>1?"s":""} ahead)\n` +
       `50% of ${cone.base - ahead + 1} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
       `80% ended ${fmtPx(anchor+q[0])} – ${fmtPx(anchor+q[4])}` +
-      (cone.cond ? `\nmedian of ${cone.cond.n} bars matching this setup: ${fmtPx(anchor + cone.cond.medEnd*(ahead/cone.H))}` : "");
+      (cone.cond && ahead === cone.H ? `\nmedian of ${cone.cond.n} bars matching this setup (measured at ${cone.H} bars): ${fmtPx(anchor + cone.cond.medEnd)}` : "");
   } else if (S.mouse && S.mouse.x < plotW){
     const mi = Math.max(i0, Math.min(i1, mouseSlot));
     ctx.strokeStyle = getCss("--crosshair"); ctx.setLineDash([3,3]);
@@ -1450,7 +1487,7 @@ async function start(){
   // winner's sockets
   const gen = ++S.loadGen;
   disconnectWS();
-  S.firedKeys.clear(); S.selBar = null;
+  S.firedKeys.clear(); S.selT = null; S.lastAlertT = 0;
   S.cone = null; S.levels = null; S.levelsKey = null;
   const ro = $("readout");
   if (ro) ro.innerHTML = '<div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div>';
@@ -1528,6 +1565,7 @@ $("diag").onclick = async () => {
   log.appendChild(tip);
 };
 $("source").onchange = e => { S.forceSource = e.target.value; start(); };
+["opt-fvg","opt-cone"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", () => draw()); });
 $("tdkey").value = getTdKey();
 $("fhkey").value = getFhKey();
 $("fhkey").addEventListener("change", e => {
@@ -1622,11 +1660,19 @@ function analyzeBar(i){
       `net ${net6 >= 0 ? "+" : "−"}$${fmtPx(Math.abs(net6))} over the last ${back} bars (${(Math.abs(net6)/atr).toFixed(1)} ATR) — drifting, no real thrust either way`);
   }
 
+  // some feeds (indices, FX) report zero volume — every volume-derived factor
+  // must then abstain rather than emit a permanent mechanical bias
+  let hasVol = false;
+  for (let j = Math.max(0, i-20); j <= i; j++) if (cs[j].v > 0){ hasVol = true; break; }
+  if (!hasVol){
+    add(0, 0, "VWAP", "this feed reports no volume for this symbol — VWAP, RVOL and the volume profile are unavailable");
+  } else {
   const aboveV = c.c > ind.vwap[i];
   add(aboveV ? 1 : -1, 2, "VWAP",
     aboveV ? `above session VWAP ($${fmtPx(ind.vwap[i])}) — buyers in control`
            : `below session VWAP ($${fmtPx(ind.vwap[i])}) — sellers in control`,
     pctFor(j => (cs[j].c > ind.vwap[j]) === aboveV, aboveV ? 1 : -1));
+  }
 
   const m = ind.mom[i], mUp = m >= 0, mRising = m >= (ind.mom[i-1] ?? m);
   add(mUp ? 1 : -1, (mUp === mRising) ? 2 : 1, "Momentum",
@@ -1649,7 +1695,9 @@ function analyzeBar(i){
     add(0, 0, "Squeeze", "off, no recent release — no compression edge either way");
 
   const rv = ind.rvol[i], cDir = c.c >= c.o ? 1 : -1;
-  if (rv >= 1.5)
+  if (!hasVol || !isFinite(rv))
+    ;                                            // covered by the VWAP abstention above
+  else if (rv >= 1.5)
     add(cDir, 1, "Volume", `RVOL ${rv.toFixed(1)} — real participation behind this ${cDir>0?"up":"down"} bar`,
       pctFor(j => ind.rvol[j] >= 1.5 && (cs[j].c >= cs[j].o) === (cDir>0), cDir));
   else if (rv < 0.8)
@@ -1662,7 +1710,8 @@ function analyzeBar(i){
   else if (!isNaN(k) && k > 75 && k < d) add(-1, 1, "Stoch RSI", `rolling over from overbought (${k.toFixed(0)})`);
   else add(0, 0, "Stoch RSI", isNaN(k) ? "warming up" : `${k.toFixed(0)} — no timing signal`);
 
-  const vp = volumeProfile(cs, Math.max(0, i-150), i, 40);
+  const vpSpan = S.view ? Math.max(60, S.view.i1 - S.view.i0) : 150;   // same window the chart draws
+  const vp = hasVol ? volumeProfile(cs, Math.max(0, i - vpSpan), i, 40) : null;
   let lvl = null;
   if (vp){
     lvl = { poc: vp.lo + (vp.poc+0.5)*vp.bh, vah: vp.lo + (vp.vaHi+1)*vp.bh, val: vp.lo + vp.vaLo*vp.bh };
@@ -1742,7 +1791,8 @@ function analyzeBar(i){
       for (let j = j0+1; j <= i; j++)
         if ((cs[j].c > ind.vwap[j]) !== (cs[j-1].c > ind.vwap[j-1])) crosses++;
       const net = Math.abs(c.c - cs[j0].o);
-      const path = cs.slice(j0, i+1).reduce((t,x)=>t+Math.abs(x.c-x.o), 0);
+      let path = 0;
+      for (let j = j0+1; j <= i; j++) path += Math.abs(cs[j].c - cs[j-1].c);
       const eff = path ? net/path : 0;
       const trending = eff > 0.25 && crosses <= 3, choppy = crosses >= 6 || eff < 0.12;
       add(trending ? (c.c >= cs[j0].o ? 1 : -1) : 0, 1, "Day character",
@@ -1785,14 +1835,9 @@ function analyzeBar(i){
 }
 
 function resample(cs, f){
-  const out = [];
-  for (let i = 0; i + f <= cs.length; i += f){
-    const sl = cs.slice(i, i+f);
-    out.push({ t:sl[0].t, o:sl[0].o, c:sl[sl.length-1].c,
-               h:Math.max.apply(null, sl.map(x=>x.h)), l:Math.min.apply(null, sl.map(x=>x.l)),
-               v:sl.reduce((t,x)=>t+x.v,0) });
-  }
-  return out;
+  // epoch-anchored buckets (f × the current tf), so "the 1h trend" means real
+  // clock hours and doesn't re-bucket as old bars fall off the front
+  return resampleTf(cs, f * TF_MS[S.tf]);
 }
 
 /* bars that looked the same (same signature): did ±1 ATR hit favorably first
@@ -1801,7 +1846,7 @@ function matchedHistory(i){
   const cs = S.candles, ind = S.ind, sig = signature(i);
   const dir = ind.mom[i] >= 0 ? 1 : -1;
   const fav = [], adv = [], ends = [];
-  let n = 0, wins = 0;
+  let n = 0, wins = 0, unresolved = 0;
   for (let j = 45; j <= i - 21; j++){          // causal: outcomes resolved before bar i only
     if (signature(j) !== sig) continue;
     const a = ind.atr[j]; if (!a) continue;
@@ -1816,12 +1861,12 @@ function matchedHistory(i){
         else if (f >= a) win = true;
       }
     }
-    n++; if (win === true) wins++;
+    n++; if (win === true) wins++; else if (win === null) unresolved++;
     fav.push(maxF); adv.push(maxA);
     ends.push(cs[Math.min(cs.length-1, j+20)].c - e);
   }
   fav.sort((x,y)=>x-y); adv.sort((x,y)=>x-y); ends.sort((x,y)=>x-y);
-  return { n, wins, dir, medFav: median(fav), medAdv: median(adv), medEnd: median(ends) };
+  return { n, wins, unresolved, dir, medFav: median(fav), medAdv: median(adv), medEnd: median(ends) };
 }
 
 function renderRead(i){
@@ -1871,7 +1916,7 @@ function renderRead(i){
   if (hist){
     if (hist.n >= 8){
       const pct = Math.round(100*hist.wins/hist.n);
-      oddsHtml += `<div class="fline"><span class="bignum">${pct}%</span>&nbsp;of the ${hist.n} bars on this chart that looked like this moved <b>$${fmtPx(hist.medFav)}</b>* ${dirWord.toLowerCase()} (1 ATR = $${fmtPx(a.atr)}) before moving 1 ATR against.</div>
+      oddsHtml += `<div class="fline"><span class="bignum">${pct}%</span>&nbsp;of the ${hist.n} bars on this chart that looked like this moved <b>$${fmtPx(hist.medFav)}</b>* ${dirWord.toLowerCase()} (1 ATR = $${fmtPx(a.atr)}) before moving 1 ATR against${hist.unresolved ? ` — and ${hist.unresolved} of them never traveled 1 ATR either way` : ""}.</div>
       <div class="fline hint">*median best move within 20 bars; median worst drawdown was $${fmtPx(hist.medAdv)}. Sample: this chart's loaded history only.</div>`;
     } else {
       oddsHtml += `<div class="fline hint">Only ${hist.n} bars in the loaded history looked like this — too few to quote a percentage honestly. Treat this as a lean, not odds.</div>`;
@@ -1906,9 +1951,10 @@ function renderRead(i){
       const fill = edge >= 0
         ? `<div class="fill pro" style="left:50%;width:${w}%"></div>`
         : `<div class="fill con" style="right:50%;width:${w}%"></div>`;
+      const indep = Math.max(1, Math.round(f.pct.n/10));
       bar = `<div class="pbar" title="50% would be a coin flip — the colored part is the measured edge">
                <div class="tick"></div>${fill}</div>
-             <div class="plabel">${p}% <span>(${edge>=0?"+":""}${edge} vs coin flip, n=${f.pct.n})</span></div>`;
+             <div class="plabel" title="outcomes are 10-bar windows, so neighboring samples overlap — the effective independent count is roughly n/10">${p}% <span>(${edge>=0?"+":""}${edge} vs flip, n=${f.pct.n} ≈ ${indep} indep.)</span></div>`;
     }
     const pts = f.pts > 0 ? `+${f.pts}` : f.pts < 0 ? `${f.pts}` : "0";
     return `<div class="frow">
@@ -1942,7 +1988,7 @@ function renderRead(i){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
-      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)} ${etZone(a.c.t)}${forming ? " (forming)" : ""} · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)}</div>
       ${formingHtml}
       ${meterHtml}
       <div class="fline">${verdictSub}</div>
@@ -1957,12 +2003,17 @@ function renderRead(i){
   </div>`;
   const btn = $("readlog");
   if (btn) btn.onclick = () => {
-    $("j-dir").value = a.lean < 0 ? "short" : "long";
-    $("j-entry").value = fmtPx(a.c.c);
+    if (a.lean !== 0) $("j-dir").value = a.lean < 0 ? "short" : "long";   // NO EDGE prefills nothing
+    $("j-entry").value = (Math.round(a.c.c*100)/100);
     if (a.lvl){
-      $("j-target").value = +fmtPx(a.lean < 0 ? a.lvl.val : a.lvl.vah);
-      $("j-stop").value = +fmtPx(a.lean < 0 ? a.c.c + a.atr : a.c.c - a.atr);
+      const tgt = a.lean < 0 ? a.lvl.val : a.lvl.vah;
+      const stp = a.lean < 0 ? a.c.c + a.atr : a.c.c - a.atr;
+      $("j-target").value = Math.round(tgt*100)/100;
+      $("j-stop").value = Math.round(stp*100)/100;
     }
+    // the journal must snapshot THIS read — the one the user acted on — not
+    // whatever the live bar looks like by the time they hit submit
+    S.readSnapshot = { i: a.i, t: a.c.t };
     $("journal").scrollIntoView({ behavior:"smooth" });
     $("j-thesis").focus();
   };
@@ -1974,7 +2025,7 @@ canvas.addEventListener("click", e => {
   const x = e.clientX - r.left;
   if (x >= S.view.plotW) return;
   const idx = Math.max(S.view.i0, Math.min(S.view.i1, S.view.i0 + Math.floor(x / S.view.bw)));
-  S.selBar = idx;
+  S.selT = S.candles[idx].t;
   draw();
   renderRead(idx);
   $("read").scrollIntoView({ behavior:"smooth", block:"nearest" });
@@ -1982,7 +2033,7 @@ canvas.addEventListener("click", e => {
 $("readnow").onclick = () => {
   if (!S.candles.length) return;
   const i = S.candles.length - 1;   // the live, still-forming bar — what "current" means
-  S.selBar = i; draw(); renderRead(i);
+  S.selT = S.candles[i].t; draw(); renderRead(i);
 };
 
 /* ============================== trade journal ============================== */
@@ -1996,10 +2047,17 @@ function jSave(t){ try { localStorage.setItem("mrjournal", JSON.stringify(t)); }
 $("jform").addEventListener("submit", e => {
   e.preventDefault();
   if (!S.candles.length){ alert("Load a chart first — the journal snapshots the tool's read at entry."); return; }
-  const i = S.candles.length - 1;   // you are entering now, so snapshot now
+  // if the form was prefilled from a specific read, snapshot that read;
+  // otherwise snapshot the live bar (entering now)
+  let i = S.candles.length - 1;
+  if (S.readSnapshot){
+    const ri = S.candles.findIndex(b => b.t === S.readSnapshot.t);
+    if (ri >= 0) i = ri;
+    S.readSnapshot = null;
+  }
   const a = analyzeBar(i);
   const dir = $("j-dir").value;
-  const entry = parseFloat($("j-entry").value) || S.candles[S.candles.length-1].c;
+  const entry = parseFloat($("j-entry").value) || S.candles[i].c;
   const trade = {
     id: Date.now(), openedAt: new Date().toISOString(), symbol: S.symbol, tf: S.tf,
     dir, entry,
