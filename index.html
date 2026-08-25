@@ -116,6 +116,8 @@
   .plabel{font-size:11px; margin-top:3px; font-weight:700;}
   .plabel span{font-weight:400; color:var(--muted);}
   .frow .fmark em{display:block; font-style:normal; font-size:10px; font-weight:700; opacity:.85;}
+  .forming{font-size:12px; background:var(--midzone); border:1px solid var(--border);
+    border-radius:8px; padding:7px 9px; margin:6px 0; line-height:1.45;}
   .scale{font-size:12px; color:var(--muted); margin:6px 0 2px; line-height:1.5;}
   .scale b{color:var(--text); font-size:14px;}
   .scale .bands{display:block; font-size:11px; opacity:.8;}
@@ -1698,7 +1700,7 @@ function renderRead(i){
   // reading the live edge with the cone available: the lean, in dollars-by-when
   {
     let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
-    if (i === li && S.cone){
+    if (i >= li && S.cone){
       const cone = S.cone, anchor = cs[cs.length-1].c, q = cone.qs[cone.H];
       const endD = new Date(cs[cs.length-1].t + cone.H*TF_MS[S.tf]);
       oddsHtml += `<div class="fline">By <b>&nbsp;${etHM(endD.getTime())} ${etZone()}</b>&nbsp;(${cone.H} bars): 50% of past paths ended <b>&nbsp;$${fmtPx(anchor+q[1])} – $${fmtPx(anchor+q[3])}</b>&nbsp;· 80% ended $${fmtPx(anchor+q[0])} – $${fmtPx(anchor+q[4])}${cone.cond ? ` · median of ${cone.cond.n} similar setups: <b>$${fmtPx(anchor+cone.cond.medEnd)}</b>` : ""}</div>
@@ -1758,6 +1760,11 @@ function renderRead(i){
       <div class="fline hint">Click bars in the past like this to test your read before risking money on the live edge.</div></div>`;
   }
 
+  const forming = !cs[i].closed;
+  const nbc = forming ? nextBarClose() : null;
+  const formingHtml = forming
+    ? `<div class="forming">⏳ <b>This bar is still forming</b>${nbc ? ` — closes in ${mmss(nbc - Date.now())}` : ""}. Its high, low, close and volume can all still change, so this read is provisional and may flip before the close. Alerts deliberately wait for the close; this button does not.</div>`
+    : "";
   const d = new Date(a.c.t);
   const needle = Math.max(2, Math.min(98, (a.score + a.ceiling) / (2*a.ceiling) * 100));
   const meterHtml = `<div class="meter"><div class="mtick"></div><div class="mneedle" style="left:${needle}%"></div></div>
@@ -1766,7 +1773,8 @@ function renderRead(i){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
-      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)} ${etZone(a.c.t)} · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">${S.symbol} ${S.tf} · bar ${etStamp(a.c.t)} ${etZone(a.c.t)}${forming ? " (forming)" : ""} · price $${fmtPx(a.c.c)}</div>
+      ${formingHtml}
       ${meterHtml}
       <div class="fline">${verdictSub}</div>
       ${oddsHtml}
@@ -1804,7 +1812,7 @@ canvas.addEventListener("click", e => {
 });
 $("readnow").onclick = () => {
   if (!S.candles.length) return;
-  let i = S.candles.length - 1; if (!S.candles[i].closed && i > 0) i--;
+  const i = S.candles.length - 1;   // the live, still-forming bar — what "current" means
   S.selBar = i; draw(); renderRead(i);
 };
 
@@ -1819,7 +1827,7 @@ function jSave(t){ try { localStorage.setItem("mrjournal", JSON.stringify(t)); }
 $("jform").addEventListener("submit", e => {
   e.preventDefault();
   if (!S.candles.length){ alert("Load a chart first — the journal snapshots the tool's read at entry."); return; }
-  let i = S.candles.length - 1; if (!S.candles[i].closed && i > 0) i--;
+  const i = S.candles.length - 1;   // you are entering now, so snapshot now
   const a = analyzeBar(i);
   const dir = $("j-dir").value;
   const entry = parseFloat($("j-entry").value) || S.candles[S.candles.length-1].c;
