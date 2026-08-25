@@ -23,6 +23,7 @@
     --selfill:rgba(232,163,61,0.10); --fvgup:rgba(38,166,154,0.12); --fvgdn:rgba(239,83,80,0.12);
     --obzone:rgba(239,83,80,0.10); --oszone:rgba(38,166,154,0.10); --midzone:rgba(127,127,127,0.05);
     --coneouter:rgba(120,150,190,0.10); --coneinner:rgba(120,150,190,0.20);
+    --lvlline:rgba(150,160,175,0.55);
   }
   body.light{
     --bg:#f6f7f9; --panel:#ffffff; --border:#d9dfe7; --text:#1d2733; --muted:#5b6a7a;
@@ -37,6 +38,7 @@
     --selfill:rgba(200,140,30,0.12); --fvgup:rgba(21,133,120,0.12); --fvgdn:rgba(207,64,61,0.12);
     --obzone:rgba(207,64,61,0.10); --oszone:rgba(21,133,120,0.10); --midzone:rgba(80,95,115,0.06);
     --coneouter:rgba(60,95,150,0.10); --coneinner:rgba(60,95,150,0.20);
+    --lvlline:rgba(70,85,105,0.50);
   }
   body.light #legend{text-shadow:none;}
   *{box-sizing:border-box; margin:0; padding:0;}
@@ -218,6 +220,7 @@
       <label><input type="checkbox" id="opt-squeeze" checked> Squeeze release (+ direction)</label>
       <label><input type="checkbox" id="opt-rvol" checked> Volume spike / range expansion</label>
       <label><input type="checkbox" id="opt-vwap" checked> VWAP reclaim / loss on volume</label>
+      <label><input type="checkbox" id="opt-lvl" checked> Level rejections / tested breaks</label>
       <label><input type="checkbox" id="opt-sound" checked> Sound</label>
       <label><input type="checkbox" id="opt-fvg" checked> Show FVG zones on chart</label>
       <label><input type="checkbox" id="opt-cone" checked> Projection cone (where price has historically gone)</label>
@@ -660,6 +663,42 @@ function volumeProfile(cs, i0, i1, buckets){
    leaves a price band that traded zero volume. Price tends to come back and
    "fill" it, and unfilled gaps act as support/resistance. Zones shrink as
    price eats into them and disappear when fully filled. */
+/* Horizontal levels the market keeps testing: swing highs/lows (3-bar pivots)
+   clustered within a third of an ATR. The touch count is the level's weight —
+   a price probed five times is a wall of resting orders, not noise. */
+function findLevels(cs, upto, ind){
+  const atr = ind.atr[upto] || 0; if (!atr) return [];
+  const piv = [];
+  for (let i = 3; i <= upto - 3; i++){
+    let isH = true, isL = true;
+    for (let k = 1; k <= 3; k++){
+      if (cs[i].h < cs[i-k].h || cs[i].h < cs[i+k].h) isH = false;
+      if (cs[i].l > cs[i-k].l || cs[i].l > cs[i+k].l) isL = false;
+    }
+    if (isH) piv.push({ p: cs[i].h, i });
+    if (isL) piv.push({ p: cs[i].l, i });
+  }
+  piv.sort((a,b) => a.p - b.p);
+  const tol = 0.35*atr, out = [];
+  for (const pv of piv){
+    const L = out[out.length-1];
+    if (L && pv.p - L.sum/L.touches <= tol){ L.sum += pv.p; L.touches++; L.last = Math.max(L.last, pv.i); }
+    else out.push({ sum: pv.p, touches: 1, last: pv.i });
+  }
+  return out.filter(L => L.touches >= 2)
+            .map(L => ({ price: L.sum/L.touches, touches: L.touches, last: L.last }));
+}
+
+function updateLevels(){
+  const cs = S.candles;
+  if (!cs.length || !S.ind){ S.levels = null; return; }
+  let li = cs.length-1; if (!cs[li].closed && li > 0) li--;
+  if (li < 40){ S.levels = null; return; }
+  if (S.levelsAt === cs[li].t && S.levelsLen === cs.length) return;
+  S.levelsAt = cs[li].t; S.levelsLen = cs.length;
+  S.levels = findLevels(cs, li, S.ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
+}
+
 function findFVGs(cs, upto, ind){
   const out = [];
   for (let i = 2; i <= upto; i++){
@@ -704,7 +743,38 @@ function evaluateAlerts(){
     fireAlert("volspike", i, dir,
       `Volume spike ${dir.toUpperCase()} · RVOL ${rvol.toFixed(1)} with range expansion · ${px(c.c)}`);
   }
-  // 3) VWAP reclaim / loss on volume
+  // 3) level rejections and tested breaks
+  if ($("opt-lvl").checked && S.levels && i > 0){
+    const a = ind.atr[i] || 0, prev = cs[i-1];
+    for (const L of S.levels){
+      if (!a) break;
+      const above = L.price > c.c;
+      const touchAt = j => above ? (cs[j].h >= L.price - 0.15*a && cs[j].c < L.price)
+                                 : (cs[j].l <= L.price + 0.15*a && cs[j].c > L.price);
+      // fire once per ATTEMPT: only on the first bar of a touch episode
+      if (touchAt(i) && (i === 0 || !touchAt(i-1))){
+        let n = 0, inT = false;
+        for (let j = Math.max(0, i-60); j <= i; j++){
+          const t = touchAt(j);
+          if (t && !inT) n++;
+          inT = t;
+        }
+        if (n >= 3)
+          fireAlert("lvlrej:"+L.price.toFixed(2), i, above ? "down" : "up",
+            `Failed attempt #${n} at $${fmtPx(L.price)} (level tested ${L.touches}×) — repeated failures often resolve away from the level`);
+      }
+      if (L.touches >= 3){
+        if (prev.c < L.price && c.c > L.price + 0.15*a)
+          fireAlert("lvlbreak:"+L.price.toFixed(2), i, "up",
+            `Broke $${fmtPx(L.price)} (tested ${L.touches}×) · RVOL ${rvol.toFixed(1)} — tested breaks tend to travel`);
+        else if (prev.c > L.price && c.c < L.price - 0.15*a)
+          fireAlert("lvlbreak:"+L.price.toFixed(2), i, "down",
+            `Lost $${fmtPx(L.price)} (tested ${L.touches}×) · RVOL ${rvol.toFixed(1)} — tested breaks tend to travel`);
+      }
+    }
+  }
+
+  // 4) VWAP reclaim / loss on volume
   if ($("opt-vwap").checked && i > 0){
     const above = c.c > ind.vwap[i], wasAbove = cs[i-1].c > ind.vwap[i-1];
     if (above !== wasAbove && rvol >= Math.max(1.3, thr-0.2)){
@@ -980,6 +1050,7 @@ function layout(){
 function refresh(barClosed){
   S.ind = computeIndicators(S.candles);
   updateCone();
+  updateLevels();
   if (barClosed) evaluateAlerts();
   draw();
 }
@@ -1096,6 +1167,23 @@ function draw(){
   line(ind.kcU, getCss("--kcline"), [4,4]); line(ind.kcL, getCss("--kcline"), [4,4]);
   line(ind.bbU, getCss("--bbline"));  line(ind.bbL, getCss("--bbline"));
   line(ind.vwap, getCss("--accent"), null, 1.7);
+
+  // tested horizontal levels: dashes weighted by how many times price hit them
+  if (S.levels){
+    for (const L of S.levels){
+      if (L.price < lo || L.price > hi) continue;
+      const yy = Y(L.price);
+      ctx.strokeStyle = getCss("--lvlline");
+      ctx.lineWidth = L.touches >= 4 ? 1.6 : 1;
+      ctx.setLineDash([7,5]);
+      ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(plotW, yy); ctx.stroke();
+      ctx.setLineDash([]); ctx.lineWidth = 1;
+      ctx.fillStyle = getCss("--panellabel");
+      ctx.font = "10px sans-serif";
+      ctx.fillText(`×${L.touches}`, plotW - 26, yy - 3);
+      ctx.font = "11px sans-serif";
+    }
+  }
 
   // unfilled fair-value gaps, drawn from birth to the right edge
   if ($("opt-fvg") && $("opt-fvg").checked){
@@ -1468,7 +1556,7 @@ function signature(i){
 
 /* What each factor could contribute if it voted at full strength. The sum over
    the factors actually present is the score's ceiling. */
-const POTENTIAL = { "Tape (now)":2, "VWAP":2, "Momentum":2, "Squeeze":2,
+const POTENTIAL = { "Tape (now)":2, "VWAP":2, "Momentum":2, "Squeeze":2, "Levels":2,
                     "Volume":1, "Stoch RSI":1, "Profile":1, "Day character":1, "Right now":0 };
 
 function analyzeBar(i){
@@ -1556,6 +1644,52 @@ function analyzeBar(i){
     else add(0, 0, "Profile", `inside value (POC $${fmtPx(lvl.poc)}) — balance; expect rotation back to $${fmtPx(lvl.poc)}, not a trend`);
   }
 
+  // tested horizontal levels near price: repeated rejections vote away from
+  // the level; a fresh close through a well-tested one votes with the break
+  let keyLevels = null;
+  {
+    const lvls = findLevels(cs, i, ind);
+    let res = null, sup = null;
+    for (const L of lvls){
+      if (L.price > c.c && (!res || L.price < res.price)) res = L;
+      if (L.price < c.c && (!sup || L.price > sup.price)) sup = L;
+    }
+    // distinct failed ATTEMPTS, not bars: consecutive bars pressing the level
+    // are one attempt; a new attempt starts after price backs off
+    const rejEpisodes = (L, above) => {
+      let n = 0, inTouch = false;
+      for (let j = Math.max(0, i-60); j <= i; j++){
+        const touch = above ? (cs[j].h >= L.price - 0.15*atr && cs[j].c < L.price)
+                            : (cs[j].l <= L.price + 0.15*atr && cs[j].c > L.price);
+        if (touch && !inTouch) n++;
+        inTouch = touch;
+      }
+      return n;
+    };
+    if (res) res = { ...res, rej: rejEpisodes(res, true) };
+    if (sup) sup = { ...sup, rej: rejEpisodes(sup, false) };
+    keyLevels = { res, sup };
+    const prev = cs[i-1];
+    // a break is a CROSSING of any tested level, so compare against the
+    // previous close — after the breaking bar the level is already behind you
+    let broke = null;
+    if (prev) for (const L of lvls){
+      if (L.touches < 3) continue;
+      if (prev.c < L.price && c.c > L.price + 0.15*atr){ broke = { L, dir:1 }; break; }
+      if (prev.c > L.price && c.c < L.price - 0.15*atr){ broke = { L, dir:-1 }; break; }
+    }
+    if (broke)
+      add(broke.dir, 2, "Levels", `just closed ${broke.dir > 0 ? "through" : "below"} $${fmtPx(broke.L.price)}, a level tested ${broke.L.touches}× — tested breaks tend to travel`);
+    else if (res && res.price - c.c <= 1.2*atr && res.rej >= 3)
+      add(-1, 1, "Levels", `rejected ${res.rej}× recently at $${fmtPx(res.price)} (tested ${res.touches}× overall) — your own observation: repeated failures usually resolve the other way`);
+    else if (sup && c.c - sup.price <= 1.2*atr && sup.rej >= 3)
+      add(1, 1, "Levels", `held ${sup.rej}× recently at $${fmtPx(sup.price)} (tested ${sup.touches}× overall) — repeated defenses usually resolve away from the level`);
+    else if (res || sup)
+      add(0, 0, "Levels", [res ? `ceiling $${fmtPx(res.price)} (×${res.touches}) above` : null,
+                           sup ? `floor $${fmtPx(sup.price)} (×${sup.touches}) below` : null]
+                          .filter(Boolean).join(" · ") + " — nothing being tested hard right now");
+  }
+
   // bigger picture: the same chart resampled to a higher timeframe. The higher
   // timeframe sets the current; the lower one only times the entry.
   const HTF = { "1m":[15,"15m"], "3m":[10,"30m"], "5m":[12,"1h"], "15m":[4,"1h"],
@@ -1620,7 +1754,7 @@ function analyzeBar(i){
   const ceiling = factors.reduce((t,f) => t + (POTENTIAL[f.name] ?? (f.name.startsWith("Bigger picture") ? 2 : 1)), 0);
   const tally = { up: factors.filter(f=>f.pts>0).length, down: factors.filter(f=>f.pts<0).length,
                   flat: factors.filter(f=>!f.pts).length };
-  return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, lvl, tapeDir, tapeConflict };
+  return { i, c, atr, factors, score, ceiling, tally, lean, squeezeOn: ind.squeeze[i], stalled, lvl, keyLevels, tapeDir, tapeConflict };
 }
 
 function resample(cs, f){
@@ -1719,11 +1853,19 @@ function renderRead(i){
 
   let lvlHtml = "";
   if (a.lvl){
-    const rows = [["Value area top", a.lvl.vah, "resistance / breakout line"],
-                  ["POC (magnet)",  a.lvl.poc, "price gravitates here in chop"],
-                  ["Value area bottom", a.lvl.val, "support / breakdown line"]]
+    const rows = [];
+    if (a.keyLevels && a.keyLevels.res)
+      rows.push([`Tested ceiling ×${a.keyLevels.res.touches}${a.keyLevels.res.rej >= 2 ? ` (${a.keyLevels.res.rej} recent rejections)` : ""}`,
+                 a.keyLevels.res.price, "repeated failures here resolve down more often than through"]);
+    if (a.keyLevels && a.keyLevels.sup)
+      rows.push([`Tested floor ×${a.keyLevels.sup.touches}${a.keyLevels.sup.rej >= 2 ? ` (held ${a.keyLevels.sup.rej}× recently)` : ""}`,
+                 a.keyLevels.sup.price, "buyers keep defending this price"]);
+    rows.push(["Value area top", a.lvl.vah, "resistance / breakout line"],
+              ["POC (magnet)",  a.lvl.poc, "price gravitates here in chop"],
+              ["Value area bottom", a.lvl.val, "support / breakdown line"]);
+    const rowsHtml = rows
       .map(([nm,p,why]) => `<div class="fline"><span>${nm}</span><b>&nbsp;$${fmtPx(p)}</b><span class="fpct">${p >= a.c.c ? "+" : "−"}$${fmtPx(Math.abs(p-a.c.c))} away · ${why}</span></div>`).join("");
-    lvlHtml = `<div class="card"><h3>Levels that matter ($)</h3>${rows}
+    lvlHtml = `<div class="card"><h3>Levels that matter ($)</h3>${rowsHtml}
       <div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). A target much beyond the next level needs the level to break first.</div></div>`;
   }
 
