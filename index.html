@@ -1298,10 +1298,16 @@ function draw(){
     };
     bandPoly(4, 0, getCss("--coneouter"));   // 10th–90th percentile
     bandPoly(3, 1, getCss("--coneinner"));   // 25th–75th percentile
+    // the dashed line is the median of ALL past paths — the base rate, NOT the
+    // lean and NOT a prediction. A lean is the claim that THIS setup differs
+    // from this line; the red dot (when shown) is that claim, measured.
     ctx.strokeStyle = getCss("--muted"); ctx.setLineDash([2,3]); ctx.beginPath();
     ctx.moveTo(Xf(0), Y(anchor));
     for (let h = 1; h <= F; h++) ctx.lineTo(Xf(h), Y(anchor + cone.qs[h][2]));
     ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = getCss("--muted"); ctx.font = "9px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("typical path, ALL bars", Xf(F) - 2, Y(anchor + cone.qs[F][2]) + (cone.cond && cone.cond.medEnd < 0 ? -5 : 11));
+    ctx.textAlign = "left"; ctx.font = "11px sans-serif";
     // the matched-setup median is measured at ONE horizon (20 bars); drawing a
     // path through intermediate hours would be inventing data — mark only the
     // measured endpoint, and only when the cone actually reaches it
@@ -1312,6 +1318,9 @@ function draw(){
       ctx.beginPath(); ctx.arc(ex, ey, 3.5, 0, 7); ctx.fill();
       ctx.strokeStyle = col; ctx.setLineDash([2,3]);
       ctx.beginPath(); ctx.moveTo(ex - 14, ey); ctx.lineTo(ex + 6, ey); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = col; ctx.font = "9px sans-serif"; ctx.textAlign = "right";
+      ctx.fillText(`bars like THIS one (${cone.cond.n})`, ex - 2, ey + (cone.cond.medEnd < 0 ? 11 : -5));
+      ctx.textAlign = "left"; ctx.font = "11px sans-serif";
     }
     // when does the cone end?
     const endD = new Date(cs[i1].t + F*TF_MS[S.tf]);
@@ -1488,7 +1497,7 @@ function draw(){
     const q = cone.qs[ahead];
     lg.textContent =
       `PROJECTION · by ${etHM(td.getTime())} ${etZone()} (${ahead} bar${ahead>1?"s":""} ahead)\n` +
-      `50% of ${cone.base - ahead + 1} past paths ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
+      `50% of ${cone.base - ahead + 1} past paths (ALL bars — the base rate, not the lean) ended ${fmtPx(anchor+q[1])} – ${fmtPx(anchor+q[3])}\n` +
       `80% ended ${fmtPx(anchor+q[0])} – ${fmtPx(anchor+q[4])}` +
       (cone.cond && ahead === cone.H ? `\nmedian of ${cone.cond.n} bars matching this setup (measured at ${cone.H} bars): ${fmtPx(anchor + cone.cond.medEnd)}` : "");
   } else if (S.mouse && S.mouse.x < plotW){
