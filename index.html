@@ -197,7 +197,7 @@
   </div>
   <div class="ctl">
     <input id="tdkey" type="password" placeholder="stock API key" spellcheck="false"
-           title="Free key from twelvedata.com — needed for stock symbols like SPY. Stored only in this browser.">
+           title="Free key from twelvedata.com — needed for stock symbols like SPY. Saved in this browser AND in the page address, so a bookmark carries it to other devices — don't share that link.">
     <a id="keylink" href="https://twelvedata.com/register" target="_blank" rel="noopener" title="Get a free key (email signup, no card)">get key</a>
     <input id="fhkey" type="password" placeholder="tick key (optional)" spellcheck="false"
            title="Optional second free key from finnhub.io — streams every trade so the chart ticks live like TradingView. Without it the chart refreshes every 12s.">
@@ -309,7 +309,7 @@
         <ul>
           <li><b>Stops:</b> a stop closer than ~1 ATR is inside random noise — you'll be stopped out by nothing. Put it beyond 1 ATR and behind a level.</li>
           <li><b>Targets:</b> expecting a 4-ATR move by end of day is a lottery ticket; 1–2 ATR is a normal expectation.</li>
-          <li><b>Regime:</b> bars suddenly 2× ATR = the market woke up (that's the range-expansion alert).</li>
+          <li><b>Regime:</b> a bar suddenly 1.5× its recent average range = the market woke up (that's the range-expansion alert).</li>
         </ul>
         <p class="why">You don't compute it — the tool does. You just need the idea: measure moves in ATRs, not in hopes.</p>
       </div>
@@ -408,9 +408,9 @@ PLANS.binanceus = PLANS.binance;
 
 function planFor(srcId, tf){
   const p = PLANS[srcId]; if (!p) return null;
-  if (p.native[tf] != null) return { param: p.native[tf], factor: 1, baseMs: TF_MS[tf] };
+  if (p.native[tf] != null) return { param: p.native[tf], factor: 1 };
   const d = p.derived[tf]; if (!d) return null;
-  return { param: p.native[d[0]], factor: d[1], baseMs: TF_MS[d[0]] };
+  return { param: p.native[d[0]], factor: d[1] };
 }
 
 /* Time-anchored resample: bars grouped into epoch-aligned buckets of tfMs, so
@@ -759,7 +759,7 @@ function evaluateAlertsAt(i){
     }
   }
   // 2) volume spike + range expansion
-  if ($("opt-rvol").checked && rvol >= Math.max(2, thr) && (c.h-c.l) > 1.5*ind.rngAvg[i]){
+  if ($("opt-rvol").checked && rvol >= Math.max(1.5, thr) && (c.h-c.l) > 1.5*ind.rngAvg[i]){
     const dir = c.c >= c.o ? "up" : "down";
     fireAlert("volspike", i, dir,
       `Volume spike ${dir.toUpperCase()} · RVOL ${rvol.toFixed(1)} with range expansion · ${px(c.c)}`);
@@ -817,7 +817,7 @@ function fireAlert(type, barIdx, dir, text){
   const now = new Date();
   el.innerHTML = `<span class="tag ${dir==="up"?"up":dir==="down"?"down":"info"}">${dir}</span>` +
     `<time>${etHM(now.getTime())}</time>` +
-    `<div>${S.symbol} ${S.tf} — ${text}</div>`;
+    `<div>${esc(S.symbol)} ${S.tf} — ${text}</div>`;
   log.prepend(el);
   while (log.children.length > 60) log.lastChild.remove();
   if ($("opt-sound").checked) beep(dir);
@@ -880,7 +880,7 @@ async function loadHistory(gen){
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
       cs = cs.filter(b => isFinite(b.t) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c));
-      if (plan.factor > 1) cs = resampleTf(cs, TF_MS[S.tf]);
+      if (plan.factor > 1){ cs = resampleTf(cs, TF_MS[S.tf]); if (cs.length > 1) cs = cs.slice(1); }
       if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough ${S.tf} data for ${sym}`); continue; }
       S.candles = cs;
       S.candles[S.candles.length-1].closed = false;
@@ -1069,11 +1069,9 @@ async function pollOnce(){
     const age = Date.now() - cs[cs.length-1].t;
     if (S.tickLive) return;                               // stream status wins
     if (age > 3*TF_MS[S.tf] + 60e3){
-      const d = new Date(cs[cs.length-1].t);
       setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(cs[cs.length-1].t)} ${etZone()} (market closed, or the feed is delayed)`);
     } else {
-      const u = new Date();
-      setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(cs[cs.length-1].c)} · updated ${pad2(u.getHours())}:${pad2(u.getMinutes())}:${pad2(u.getSeconds())}`, "live");
+      setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(cs[cs.length-1].c)} · updated ${etHMS(Date.now())} ${etZone()}`, "live");
     }
   }catch(e){}                                  // transient — next tick retries
 }
@@ -1371,7 +1369,8 @@ function draw(){
     vMax = vMax || 1;
     const base = Pv.y + Pv.hh - 4, hh2 = Pv.hh - 22;
     for (let i=i0;i<=i1;i++){
-      const c = cs[i], up = c.c >= c.o, hot = ind.rvol[i] >= 1.5;
+      const rvThr = parseFloat($("rvolthr") && $("rvolthr").value) || 1.5;
+      const c = cs[i], up = c.c >= c.o, hot = ind.rvol[i] >= rvThr;
       ctx.fillStyle = up ? (hot ? getCss("--up") : getCss("--updim"))
                          : (hot ? getCss("--down") : getCss("--downdim"));
       const bh2 = (c.v/vMax)*hh2;
@@ -1576,8 +1575,6 @@ $("fhkey").addEventListener("change", e => {
 $("tdkey").addEventListener("change", e => {
   setTdKey(e.target.value.trim());
   writeKeyHash();
-  // a stock key strongly implies stock symbols; swap the untouched default
-  if (e.target.value.trim() && S.symbol === "BTCUSDT"){ S.symbol = "SPY"; $("symbol").value = "SPY"; }
   start();
 });
 $("notifbtn").onclick = async () => {
@@ -1651,13 +1648,13 @@ function analyzeBar(i){
   const back = Math.min(6, i);
   const net6 = c.c - cs[i-back].c;
   let tapeDir = 0;
-  if (Math.abs(net6) >= 0.7*atr){
+  if (atr > 0 && Math.abs(net6) >= 0.7*atr){
     tapeDir = net6 > 0 ? 1 : -1;
     add(tapeDir, 2, "Tape (now)",
       `price has moved ${net6 > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${(Math.abs(net6)/atr).toFixed(1)} ATR) over the last ${back} bars — this is what's happening right now, whatever the context says`);
   } else {
     add(0, 0, "Tape (now)",
-      `net ${net6 >= 0 ? "+" : "−"}$${fmtPx(Math.abs(net6))} over the last ${back} bars (${(Math.abs(net6)/atr).toFixed(1)} ATR) — drifting, no real thrust either way`);
+      `net ${net6 >= 0 ? "+" : "−"}$${fmtPx(Math.abs(net6))} over the last ${back} bars (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) + " ATR" : "flat tape"}) — drifting, no real thrust either way`);
   }
 
   // some feeds (indices, FX) report zero volume — every volume-derived factor
@@ -1697,7 +1694,7 @@ function analyzeBar(i){
   const rv = ind.rvol[i], cDir = c.c >= c.o ? 1 : -1;
   if (!hasVol || !isFinite(rv))
     ;                                            // covered by the VWAP abstention above
-  else if (rv >= 1.5)
+  else if (rv >= (parseFloat($("rvolthr") && $("rvolthr").value) || 1.5))
     add(cDir, 1, "Volume", `RVOL ${rv.toFixed(1)} — real participation behind this ${cDir>0?"up":"down"} bar`,
       pctFor(j => ind.rvol[j] >= 1.5 && (cs[j].c >= cs[j].o) === (cDir>0), cDir));
   else if (rv < 0.8)
@@ -1980,7 +1977,6 @@ function renderRead(i){
   const formingHtml = forming
     ? `<div class="forming">⏳ <b>This bar is still forming</b>${nbc ? ` — closes in ${mmss(nbc - Date.now())}` : ""}. Its high, low, close and volume can all still change, so this read is provisional and may flip before the close. Alerts deliberately wait for the close; this button does not.</div>`
     : "";
-  const d = new Date(a.c.t);
   const needle = Math.max(2, Math.min(98, (a.score + a.ceiling) / (2*a.ceiling) * 100));
   const meterHtml = `<div class="meter"><div class="mtick"></div><div class="mneedle" style="left:${needle}%"></div></div>
     <div class="mlabels"><span>−${a.ceiling} all down</span><span>0 split</span><span>+${a.ceiling} all up</span></div>
