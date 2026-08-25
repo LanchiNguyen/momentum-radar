@@ -90,8 +90,15 @@
   .tag.info{background:rgba(232,163,61,.18); color:var(--accent);}
   .alert-item time{float:right; color:var(--muted); font-size:11px;}
   .empty{color:var(--muted); font-size:12px; text-align:center; padding:24px 10px;}
-  #read, #journal{grid-column:1 / -1; border-top:1px solid var(--border); padding:18px 18px 24px; background:var(--panel);}
-  #read h2, #journal h2{font-size:15px; margin-bottom:10px;}
+  #read, #journal, #backtest{grid-column:1 / -1; border-top:1px solid var(--border); padding:18px 18px 24px; background:var(--panel);}
+  #read h2, #journal h2, #backtest h2{font-size:15px; margin-bottom:10px;}
+  .btable{border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums;}
+  .btable th{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; text-align:left; padding:5px 10px 5px 0; border-bottom:1px solid var(--border);}
+  .btable td{padding:5px 10px 5px 0; border-bottom:1px solid var(--border);}
+  .btable tr:last-child td{border-bottom:none;}
+  .btable .pos{color:var(--up); font-weight:700;} .btable .neg{color:var(--down); font-weight:700;} .btable .dim{color:var(--muted);}
+  .btverdict{font-size:15px; font-weight:700; margin:2px 0 8px;}
+  .btverdict.good{color:var(--up);} .btverdict.bad{color:var(--down);} .btverdict.none{color:var(--muted);}
   .hint{font-size:12px; color:var(--muted); font-weight:400;}
   .hint a{color:var(--muted);}
   #readout .cards{margin-top:4px;}
@@ -260,6 +267,12 @@
     <div id="jlist"></div>
   </section>
 
+  <section id="backtest">
+    <h2>Does it actually work here? <span class="hint">— replays the scorecard bar by bar over history, no hindsight</span>
+      <button id="bt-run">Run backtest</button> <span id="bt-prog" class="hint"></span></h2>
+    <div id="bt-out"><div class="empty">This replays every bar of history through the exact same scoring and alert code that runs live, then checks what price actually did next (which of ±1 ATR hit first within 20 bars — the same yardstick the read panel uses). The edge, if any, is the difference against the baseline. It fetches up to ~5,000 bars for the current symbol and timeframe (one API call).</div></div>
+  </section>
+
   <section id="learn">
     <h2>How to read this</h2>
     <p>Your entries fail when you buy hope inside chop. Every alert here encodes the same rule: <b>compression tells you a move is loading, volume tells you the move is real, and only the combination is an entry.</b> No signal, no trade — let the tool watch the chart so you don't.</p>
@@ -384,6 +397,7 @@ const S = {
   lastDataAt: 0,        // wall time of the last real data update (poll or tick)
   cone: null,           // cached projection quantiles, rebuilt when a bar closes
   loadGen: 0,           // increments per start(); stale async work checks it
+  btCollect: null,      // when set, fireAlert records into it instead of ringing
 };
 const TF_MS = { "1m":60e3, "3m":180e3, "5m":300e3, "15m":900e3, "30m":18e5, "45m":27e5, "1h":36e5, "2h":72e5 };
 
@@ -810,6 +824,10 @@ function fireAlert(type, barIdx, dir, text){
   const key = type + "@" + S.candles[barIdx].t + "@" + S.symbol + S.tf;
   if (S.firedKeys.has(key)) return;
   S.firedKeys.add(key);
+  if (S.btCollect){                      // backtest replay: record, don't ring
+    S.btCollect.push({ type: type.split(":")[0], dir, i: barIdx });
+    return;
+  }
   const log = $("alertlog");
   const empty = log.querySelector(".empty"); if (empty) empty.remove();
   const el = document.createElement("div");
@@ -1618,7 +1636,7 @@ function signature(i){
 const POTENTIAL = { "Tape (now)":2, "VWAP":2, "Momentum":2, "Squeeze":2, "Levels":2,
                     "Volume":1, "Stoch RSI":1, "Profile":1, "Day character":1, "Right now":0 };
 
-function analyzeBar(i){
+function analyzeBar(i, lite){
   const cs = S.candles, ind = S.ind;
   if (!cs || !ind || i < 45 || i >= cs.length) return null;
   const c = cs[i], atr = ind.atr[i] || (c.h - c.l);
@@ -1634,7 +1652,7 @@ function analyzeBar(i){
   // strictly causal: only bars whose 10-bar outcome had fully resolved BEFORE
   // bar i may be counted, so a click on a historical bar quotes only numbers
   // that were knowable at that bar
-  const pctFor = (cond, dir) => {
+  const pctFor = lite ? () => null : (cond, dir) => {
     let n = 0, hit = 0;
     for (let j = 45; j <= i - 11; j++){
       if (!cond(j)) continue;
@@ -1721,7 +1739,9 @@ function analyzeBar(i){
   // the level; a fresh close through a well-tested one votes with the break
   let keyLevels = null;
   {
-    const lvls = findLevels(cs, i, ind);
+    // in backtest replay S.levels is maintained causally as the loop advances —
+    // reusing it removes an O(N) scan per bar without changing live behavior
+    const lvls = (lite && S.levels) ? S.levels : findLevels(cs, i, ind);
     let res = null, sup = null;
     for (const L of lvls){
       if (L.price > c.c && (!res || L.price < res.price)) res = L;
@@ -2177,6 +2197,174 @@ $("jimport").onclick = e => {
   inp.click();
 };
 jRender();
+
+/* ============================== backtest ============================== */
+/* Replays history through the live scoring and alert code. Causality: analyzeBar
+   is causal by construction (verified factor by factor), ATR at i is Wilder-
+   recursive over bars <= i, and the level set is recomputed as the replay
+   advances so alerts never see levels built from future pivots. */
+function btOutcome(cs, ind, i, dir){
+  const a = ind.atr[i]; if (!a || i + 1 >= cs.length) return "none";
+  const e = cs[i].c, end = Math.min(cs.length - 1, i + 20);
+  for (let k = i + 1; k <= end; k++){
+    const f = dir > 0 ? cs[k].h - e : e - cs[k].l;
+    const g = dir > 0 ? e - cs[k].l : cs[k].h - e;
+    if (g >= a) return "loss";                 // stop side first (or same bar) = loss
+    if (f >= a) return "win";
+  }
+  return "none";
+}
+
+async function runBacktest(){
+  const btn = $("bt-run"), prog = $("bt-prog"), out = $("bt-out");
+  if (!S.source || !S.candles.length){ out.innerHTML = '<div class="empty">Load a chart first.</div>'; return; }
+  btn.disabled = true;
+  out.innerHTML = '<div class="empty">Fetching extended history…</div>';
+  const gen = S.loadGen;
+
+  // extended history: one call, up to 5000 bars; fall back to the loaded chart
+  let bars = null, note = "";
+  try{
+    const plan = S.plan || { param: S.tf, factor: 1 };
+    const res = await fetch(S.source.rest(S.resolvedSym, plan.param, 5000 * plan.factor), { cache:"no-store" });
+    if (res.ok){
+      let b = S.source.parse(await res.json());
+      b = b.filter(x => isFinite(x.t) && isFinite(x.o) && isFinite(x.h) && isFinite(x.l) && isFinite(x.c));
+      if (plan.factor > 1){ b = resampleTf(b, TF_MS[S.tf]); if (b.length > 1) b = b.slice(1); }
+      if (b.length > S.candles.length) bars = b.map(x => ({ ...x, closed: true }));
+    }
+  }catch(e){}
+  if (gen !== S.loadGen){ btn.disabled = false; return; }
+  if (!bars){
+    bars = S.candles.filter(c => c.closed).map(c => ({ ...c }));
+    note = "extended fetch unavailable — tested on the loaded chart only, treat every number as a small sample";
+  }
+
+  // swap state in, restore no matter what
+  const save = { cs: S.candles, ind: S.ind, levels: S.levels, levelsKey: S.levelsKey,
+                 cone: S.cone, lastAlertT: S.lastAlertT, fired: S.firedKeys };
+  S.candles = bars; S.ind = computeIndicators(bars);
+  S.firedKeys = new Set(); S.btCollect = [];
+  const ind = S.ind, N = bars.length;
+  const first = 60, lastBar = N - 21;
+
+  const acc = {
+    base: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
+    lean: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
+    bucket: { none: { w:0, l:0, u:0, n:0 }, modest: { w:0, l:0, u:0 }, strong: { w:0, l:0, u:0 } },
+    factors: {}, signals: {},
+  };
+  const tally = (slot, o) => { if (o === "win") slot.w++; else if (o === "loss") slot.l++; else slot.u++; };
+
+  try{
+    for (let i = first; i <= lastBar; i += 1){
+      if (i % 120 === 0){
+        prog.textContent = `${i - first} / ${lastBar - first} bars…`;
+        await new Promise(r => setTimeout(r, 0));            // keep the page alive
+        if (gen !== S.loadGen) throw new Error("superseded");
+      }
+      if (i % 10 === 0)                                       // levels drift slowly
+        S.levels = findLevels(bars, i, ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
+
+      const oUp = btOutcome(bars, ind, i, 1), oDn = btOutcome(bars, ind, i, -1);
+      tally(acc.base.up, oUp); tally(acc.base.dn, oDn);
+
+      const a = analyzeBar(i, true);
+      if (a){
+        if (a.lean === 1) tally(acc.lean.up, oUp);
+        else if (a.lean === -1) tally(acc.lean.dn, oDn);
+        const mag = Math.abs(a.score);
+        if (a.lean === 0) acc.bucket.none.n++;
+        else tally(mag >= 5 ? acc.bucket.strong : acc.bucket.modest, a.lean > 0 ? oUp : oDn);
+        for (const f of a.factors){
+          if (!f.pts) continue;
+          const slot = acc.factors[f.name] || (acc.factors[f.name] = { w:0, l:0, u:0 });
+          tally(slot, f.pts > 0 ? oUp : oDn);
+        }
+      }
+      S.btCollect.length = 0;
+      evaluateAlertsAt(i);
+      for (const sig of S.btCollect){
+        if (sig.dir !== "up" && sig.dir !== "down") continue;
+        const slot = acc.signals[sig.type] || (acc.signals[sig.type] = { w:0, l:0, u:0 });
+        tally(slot, btOutcome(bars, ind, i, sig.dir === "up" ? 1 : -1));
+      }
+    }
+    renderBacktest(out, acc, N, note);
+  }catch(e){
+    if (String(e.message) !== "superseded") out.innerHTML = `<div class="empty">Backtest failed: ${esc(e.message)}</div>`;
+  }finally{
+    S.btCollect = null;
+    S.candles = save.cs; S.ind = save.ind; S.levels = save.levels; S.levelsKey = save.levelsKey;
+    S.cone = save.cone; S.lastAlertT = save.lastAlertT; S.firedKeys = save.fired;
+    prog.textContent = ""; btn.disabled = false;
+    draw();
+  }
+}
+
+function renderBacktest(out, acc, N, note){
+  const pct = s => { const r = s.w + s.l + s.u; return r ? Math.round(100 * s.w / r) : 0; };
+  const tot = s => s.w + s.l + s.u;
+  const row = (label, s, base, minN) => {
+    const n = tot(s);
+    if (n < (minN ?? 20)) return `<tr><td>${label}</td><td class="dim">${n}</td><td class="dim" colspan="3">too few to judge</td></tr>`;
+    const p = pct(s), b = base == null ? null : pct(base), d = b == null ? null : p - b;
+    const cls = d == null ? "dim" : d >= 3 ? "pos" : d <= -3 ? "neg" : "dim";
+    return `<tr><td>${label}</td><td>${n}</td><td><b>${p}%</b></td>
+      <td class="dim">${s.u ? Math.round(100*s.u/n) + "% unresolved" : ""}</td>
+      <td class="${cls}">${d == null ? "—" : (d >= 0 ? "+" : "") + d + " vs base"}</td></tr>`;
+  };
+  const baseUp = acc.base.up, baseDn = acc.base.dn;
+  const eUp = tot(acc.lean.up) >= 20 ? pct(acc.lean.up) - pct(baseUp) : null;
+  const eDn = tot(acc.lean.dn) >= 20 ? pct(acc.lean.dn) - pct(baseDn) : null;
+  const edges = [eUp, eDn].filter(x => x !== null);
+  const avgEdge = edges.length ? edges.reduce((a,b)=>a+b,0)/edges.length : null;
+  let vCls = "none", vTxt;
+  if (avgEdge === null) vTxt = "Not enough lean signals in this history to judge — try a busier timeframe or more history.";
+  else if (avgEdge >= 8) { vCls = "good"; vTxt = `A solid edge on this sample: leans beat the baseline by ~${Math.round(avgEdge)} points.`; }
+  else if (avgEdge >= 3) { vCls = "good"; vTxt = `A small but real edge on this sample: leans beat the baseline by ~${Math.round(avgEdge)} points. That is what a genuine edge looks like — small.`; }
+  else if (avgEdge > -3) vTxt = "No measurable edge on this sample — treat leans as context, not as signals to trade on alone.";
+  else { vCls = "bad"; vTxt = `Leans have been WRONG on this sample (${Math.round(avgEdge)} points below baseline) — this regime disagrees with the rulebook. Do not follow leans blindly here.`; }
+
+  const fRows = Object.entries(acc.factors).sort((a,b) => tot(b[1]) - tot(a[1]))
+    .map(([name, sl]) => {
+      const upish = null; // factor-direction outcomes vs a blended base:
+      const base = { w: baseUp.w + baseDn.w, l: baseUp.l + baseDn.l, u: baseUp.u + baseDn.u };
+      return row(name, sl, base);
+    }).join("");
+  const SIGNAMES = { squeeze: "Squeeze release", volspike: "Volume spike", vwap: "VWAP cross",
+                     lvlrej: "Level rejection", lvlbreak: "Tested break" };
+  const sRows = Object.entries(acc.signals).map(([t, sl]) => {
+    const base = { w: baseUp.w + baseDn.w, l: baseUp.l + baseDn.l, u: baseUp.u + baseDn.u };
+    return row(SIGNAMES[t] || t, sl, base, 10);
+  }).join("");
+
+  out.innerHTML = `<div class="cards">
+    <div class="card">
+      <div class="btverdict ${vCls}">${vTxt}</div>
+      <div class="fline hint">${N} bars of ${esc(S.symbol)} ${S.tf} · outcome = which of ±1 ATR hit first within 20 bars · "vs base" is the honest part: the baseline is what guessing that direction on every bar would have scored.</div>
+      ${note ? `<div class="fline hint">⚠ ${note}</div>` : ""}
+      <table class="btable"><tr><th>signal</th><th>n</th><th>hit rate</th><th></th><th>edge</th></tr>
+        <tr><td class="dim">baseline: always guess up</td><td class="dim">${tot(baseUp)}</td><td class="dim">${pct(baseUp)}%</td><td class="dim"></td><td class="dim">0</td></tr>
+        <tr><td class="dim">baseline: always guess down</td><td class="dim">${tot(baseDn)}</td><td class="dim">${pct(baseDn)}%</td><td class="dim"></td><td class="dim">0</td></tr>
+        ${row("LEANS UP followed", acc.lean.up, baseUp)}
+        ${row("LEANS DOWN followed", acc.lean.dn, baseDn)}
+        ${row("· of those, modest (|score| 2–4)", acc.bucket.modest, null)}
+        ${row("· of those, strong (|score| 5+)", acc.bucket.strong, null)}
+      </table>
+      <div class="fline hint">Calibration check: "strong" should beat "modest". ${tot(acc.bucket.strong) >= 20 && tot(acc.bucket.modest) >= 20 ? (pct(acc.bucket.strong) >= pct(acc.bucket.modest) ? "It does here ✓" : "It does NOT here — conviction is not adding information on this sample ✗") : "Too few strong signals here to say."}</div>
+    </div>
+    <div class="card"><h3>Per factor — when it voted, was it right?</h3>
+      <table class="btable"><tr><th>factor</th><th>votes</th><th>hit rate</th><th></th><th>edge</th></tr>${fRows}</table></div>
+    <div class="card"><h3>Per alert type — with your current toggles/thresholds</h3>
+      <table class="btable"><tr><th>alert</th><th>fired</th><th>hit rate</th><th></th><th>edge</th></tr>${sRows || '<tr><td class="dim" colspan="5">no alerts fired on this history</td></tr>'}</table></div>
+    <div class="card"><h3>Read this honestly</h3>
+      <div class="fline">One symbol, one stretch of one regime, no commissions or slippage, and outcomes overlap (adjacent bars share most of their 20-bar window), so effective sample sizes are roughly n ÷ 20.</div>
+      <div class="fline">An edge that shows up here can vanish next month. The right use: check the sign and rough size, re-run occasionally, and distrust any bucket whose n is small.</div>
+    </div>
+  </div>`;
+}
+$("bt-run").onclick = () => runBacktest();
 
 /* A clock that ticks on its own, independent of any data arriving. The seconds
    advancing is proof the PAGE is alive; the "data Ns ago" figure is proof the
