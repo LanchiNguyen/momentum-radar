@@ -763,6 +763,43 @@ function updateLevels(){
   S.levels = findLevels(cs, li, S.ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
 }
 
+/* Multi-bar candlestick patterns at bar j, using only bars <= j. Returns
+   {type, dir} or null. One pattern max, in priority order — this feeds a
+   MEASURED factor: its historical hit rate rides the same pctFor machinery
+   as everything else, so the backtest gets to say whether it predicts. */
+function detectPattern(cs, ind, j, lvls){
+  if (j < 2) return null;
+  const atr = ind.atr[j]; if (!atr) return null;
+  const b0 = cs[j], b1 = cs[j-1], b2 = cs[j-2];
+  const body = b => Math.abs(b.c - b.o), dirOf = b => b.c >= b.o ? 1 : -1;
+
+  // engulfing: opposite-color body that spans the previous body, with real size
+  if (dirOf(b0) !== dirOf(b1) && body(b0) >= 0.6*atr &&
+      Math.max(b0.o, b0.c) >= Math.max(b1.o, b1.c) &&
+      Math.min(b0.o, b0.c) <= Math.min(b1.o, b1.c))
+    return { type:"engulfing", dir: dirOf(b0) };
+
+  // rejection wick: a long probe that closed back away — strongest when the
+  // probe touched a tested level or poked outside the Bollinger band
+  const range = b0.h - b0.l;
+  if (range >= 0.8*atr){
+    const upWick = b0.h - Math.max(b0.o, b0.c), dnWick = Math.min(b0.o, b0.c) - b0.l;
+    const probedLevel = p => (lvls || []).some(L => Math.abs(p - L.price) <= 0.3*atr);
+    if (upWick >= 0.6*range && (probedLevel(b0.h) || (isFinite(ind.bbU[j]) && b0.h > ind.bbU[j])))
+      return { type:"rejection", dir:-1 };
+    if (dnWick >= 0.6*range && (probedLevel(b0.l) || (isFinite(ind.bbL[j]) && b0.l < ind.bbL[j])))
+      return { type:"rejection", dir:1 };
+  }
+
+  // inside-bar break: coil (bar inside the prior bar) resolved by a close
+  // beyond the mother bar
+  if (b1.h <= b2.h && b1.l >= b2.l){
+    if (b0.c > b2.h + 0.1*atr) return { type:"insidebreak", dir:1 };
+    if (b0.c < b2.l - 0.1*atr) return { type:"insidebreak", dir:-1 };
+  }
+  return null;
+}
+
 function findFVGs(cs, upto, ind){
   const out = [];
   for (let i = 2; i <= upto; i++){
@@ -1697,7 +1734,7 @@ function signature(i){
 /* What each factor could contribute if it voted at full strength. The sum over
    the factors actually present is the score's ceiling. */
 const POTENTIAL = { "Tape (now)":2, "VWAP":2, "Momentum":2, "Squeeze":2, "Levels":2,
-                    "Volume":1, "Stoch RSI":1, "Profile":1, "Day character":1, "Right now":0 };
+                    "Volume":1, "Stoch RSI":1, "Profile":1, "Pattern":1, "Day character":1, "Right now":0 };
 
 function analyzeBar(i, lite){
   const cs = S.candles, ind = S.ind;
@@ -1800,11 +1837,12 @@ function analyzeBar(i, lite){
 
   // tested horizontal levels near price: repeated rejections vote away from
   // the level; a fresh close through a well-tested one votes with the break
-  let keyLevels = null;
+  let keyLevels = null, lvlList = [];
   {
     // in backtest replay S.levels is maintained causally as the loop advances —
     // reusing it removes an O(N) scan per bar without changing live behavior
     const lvls = (lite && S.levels) ? S.levels : findLevels(cs, i, ind);
+    lvlList = lvls;
     let res = null, sup = null;
     for (const L of lvls){
       if (L.price > c.c && (!res || L.price < res.price)) res = L;
@@ -1844,6 +1882,22 @@ function analyzeBar(i, lite){
       add(0, 0, "Levels", [res ? `ceiling $${fmtPx(res.price)} (×${res.touches}) above` : null,
                            sup ? `floor $${fmtPx(sup.price)} (×${sup.touches}) below` : null]
                           .filter(Boolean).join(" · ") + " — nothing being tested hard right now");
+  }
+
+  // multi-bar candlestick pattern, measured like everything else
+  {
+    const pat = detectPattern(cs, ind, i, lvlList);
+    if (pat){
+      const NAMES = { engulfing: "engulfing bar (this bar's body swallowed the previous one)",
+                      rejection: "rejection wick (a long probe that closed back away)",
+                      insidebreak: "inside-bar break (a coil resolved by a close beyond the mother bar)" };
+      add(pat.dir, 1, "Pattern",
+        `${pat.dir > 0 ? "bullish" : "bearish"} ${NAMES[pat.type]}`,
+        pctFor(j => { const p = detectPattern(cs, ind, j, []); return p && p.type === pat.type && p.dir === pat.dir; },
+               pat.dir));
+    } else {
+      add(0, 0, "Pattern", "no multi-bar pattern on the last 3 bars (engulfing / rejection wick / inside-bar break)");
+    }
   }
 
   // bigger picture: the same chart resampled to a higher timeframe. The higher
@@ -2137,6 +2191,7 @@ function renderRead(i){
     <div class="card">
       <div class="verdict ${verdictCls}">${verdictTxt}</div>
       <div class="fline hint">${esc(S.symbol)} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">A read of the <b>&nbsp;${a.i + 1} bars</b>&nbsp;ending here — tape 6 · momentum &amp; squeeze 20 · VWAP: today's session · trend: higher timeframe · levels &amp; similar-setup stats: full history. Never just this candle.</div>
       ${formingHtml}
       ${meterHtml}
       <div class="fline">${verdictSub}</div>
