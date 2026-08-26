@@ -12,8 +12,20 @@ bored and hoping, then bleeding premium to theta while price chops sideways.
 Everything here encodes one rule — **compression tells you a move is loading,
 volume tells you the move is real, and only the combination is an entry.**
 
+## The design principle
+
+An honest tool for an efficient intraday market cannot predict — the built-in
+backtest proved this tool's own forecast layer scored a coin flip, so it was
+removed. What remains is a **radar, not an oracle**: it detects events
+promptly (alerts), names the current state truthfully, and structures your
+discipline (journal). The state line says one of five things: **MOVING**
+(with or without volume confirmation), **AT A TESTED WALL**, **COILING**,
+**CHOP**, or **QUIET** — descriptions of now, never forecasts.
+
 ## What it shows
 
+- **State line** (always visible): the one-glance answer — moving, at a wall,
+  coiling, chop, or quiet — with RVOL and the nearest tested levels.
 - **Squeeze panel** (TTM-style): Bollinger Bands compressing inside Keltner
   Channels. Red dots = coiling, do not enter. Green dot = released, the move
   is starting. Histogram gives direction.
@@ -45,8 +57,9 @@ through the exact scoring and alert code that runs live (no hindsight —
 levels and statistics are recomputed causally as the replay advances),
 then scores each signal by which of ±1 ATR hit first within 20 bars.
 It fetches up to ~5,000 bars for the current symbol/timeframe in one
-API call and reports hit rates against the honest baseline, a
-conviction-calibration check, per-factor lift, and per-alert outcomes —
+API call and reports: whether trading WITH the MOVING state beat the
+baseline, whether volume confirmation earned its keep, whether the
+no-trade states truly carried no direction, and per-alert outcomes —
 every number with its sample size, and small buckets refuse to quote.
 
 ## Running it
