@@ -75,8 +75,6 @@
   #verdictbar:hover{filter:brightness(1.03);}
   .vb-badge{font-size:13px; font-weight:800; letter-spacing:.3px;}
   .vb-badge.long{color:var(--up);} .vb-badge.short{color:var(--down);} .vb-badge.none{color:var(--muted);}
-  .meter.mini{width:130px; height:8px; margin:0; flex:none;}
-  .meter.mini .mneedle{top:-2px; bottom:-2px; width:3px;}
   #vb-chips{display:flex; gap:6px; flex-wrap:wrap;}
   #vb-chips .chip{font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--border); color:var(--muted); white-space:nowrap;}
   #vb-chips .chip.pro{color:var(--up); border-color:var(--up);}
@@ -135,10 +133,6 @@
   #journal input[type=text]{text-transform:none; font-weight:400; width:auto;}
   .forming{font-size:12px; background:var(--midzone); border:1px solid var(--border);
     border-radius:8px; padding:7px 9px; margin:6px 0; line-height:1.45;}
-  .meter{position:relative; height:14px; border-radius:7px; margin:10px 0 2px;
-    background:linear-gradient(90deg, var(--down), var(--border) 40%, var(--border) 60%, var(--up));}
-  .meter .mtick{position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--muted);}
-  .meter .mneedle{position:absolute; top:-3px; bottom:-3px; width:4px; border-radius:2px; background:var(--text); box-shadow:0 0 0 2px var(--panel);}
   .jgrid{display:grid; grid-template-columns:minmax(260px,380px) 1fr; gap:14px; align-items:start;}
   @media (max-width:900px){ .jgrid{grid-template-columns:1fr;} }
   #jform{background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px 16px;}
@@ -221,7 +215,6 @@
 
 <div id="verdictbar" title="Click for the full read">
   <span class="vb-badge none" id="vb-badge">warming up…</span>
-  <div class="meter mini"><div class="mtick"></div><div class="mneedle" id="vb-needle" style="left:50%"></div></div>
   <span id="vb-chips"></span>
   <span class="hint" id="vb-when"></span>
 </div>
@@ -240,7 +233,7 @@
     </div>
 
     <div class="tabpane" data-pane="read" hidden>
-      <div id="readout"><div class="empty">Click any bar on the chart — this panel scores it right here, next to the chart: which way the evidence leans, what the same look has done before, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next.</div></div>
+      <div id="readout"><div class="empty">Click any bar on the chart and this panel names what it was doing — moving, coiling, chopping, or stalled at a tested level — with the $ levels that matter. <b>Then use ← and → to step bar by bar</b> (hold Shift for ten). On a past bar it also shows what actually happened next.</div></div>
     </div>
 
     <div class="tabpane" data-pane="alerts">
@@ -285,7 +278,7 @@
   </section>
 
   <section id="backtest">
-    <h2>Does it actually work here? <span class="hint">— replays the scorecard bar by bar over history, no hindsight</span>
+    <h2>Does it actually work here? <span class="hint">— replays the state read bar by bar over history, no hindsight</span>
       <button id="bt-run">Run backtest</button> <span id="bt-prog" class="hint"></span></h2>
     <div id="bt-out"><div class="empty">This replays every bar of history through the exact same scoring and alert code that runs live, then checks what price actually did next (which of ±1 ATR hit first within 20 bars — the same yardstick the read panel uses). The edge, if any, is the difference against the baseline. It fetches up to ~5,000 bars for the current symbol and timeframe (one API call).</div></div>
   </section>
@@ -1463,7 +1456,7 @@ async function start(){
   S.levels = null; S.levelsKey = null;
   S.liveRead = null; S.liveReadT = null; S.liveKey = null; renderVerdictBar();
   const ro = $("readout");
-  if (ro) ro.innerHTML = '<div class="empty">Click a bar on the chart and this panel scores the setup: which way the evidence leans, what the same look has done before on this chart, and the $ levels that matter. Click a bar in the past and it also shows what actually happened next — good for practice.</div>';
+  if (ro) ro.innerHTML = '<div class="empty">Click any bar on the chart and this panel names what it was doing — moving, coiling, chopping, or stalled at a tested level — with the $ levels that matter. <b>Then use ← and → to step bar by bar</b> (hold Shift for ten). On a past bar it also shows what actually happened next.</div>';
   try{
     await loadHistory(gen);
     if (gen !== S.loadGen) return;
@@ -1564,9 +1557,10 @@ canvas.addEventListener("mousemove", e => {
   S.mouse = { x:e.clientX-r.left, y:e.clientY-r.top }; draw();
 });
 canvas.addEventListener("mouseleave", () => { S.mouse = null; draw(); });
+const MAX_BARS_VISIBLE = 400;   // how far back the chart can zoom, and so how far ← can walk
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
-  S.barsVisible = Math.max(60, Math.min(400, Math.round(S.barsVisible * (e.deltaY > 0 ? 1.15 : 0.87))));
+  S.barsVisible = Math.max(60, Math.min(MAX_BARS_VISIBLE, Math.round(S.barsVisible * (e.deltaY > 0 ? 1.15 : 0.87))));
   draw();
 }, { passive:false });
 /* ============================== spot read ============================== */
@@ -1691,9 +1685,19 @@ $("verdictbar").onclick = () => {
   if (S.liveReadT == null) return;
   const idx = S.candles.findIndex(b => b.t === S.liveReadT);
   if (idx < 0) return;
-  S.selT = S.liveReadT; draw(); renderRead(idx);
-  showTab("read");
+  selectBar(idx);
 };
+
+/* The one way a bar becomes the selected bar — click, "read current", the
+   verdict strip and the arrow keys all land here. Deliberately no
+   scrollIntoView: the read panel sits beside the chart so both stay in view. */
+function selectBar(i){
+  const cs = S.candles;
+  if (!cs.length) return;
+  i = Math.max(0, Math.min(cs.length - 1, i));
+  S.selT = cs[i].t;
+  draw(); renderRead(i); showTab("read");
+}
 
 function renderRead(i){
   const out = $("readout");
@@ -1735,7 +1739,7 @@ function renderRead(i){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="verdict ${headCls}">${headline}</div>
-      <div class="fline hint">${esc(S.symbol)} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)}</div>
+      <div class="fline hint">${esc(S.symbol)} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)} · ← → to step bars</div>
       <div class="fline hint">A read of the ${a.i + 1} bars ending here — tape, session VWAP, compression, tested levels, volume. A description of NOW, not a forecast: the backtest showed forecasts here were coin flips, so this tool no longer makes them.</div>
       ${formingHtml}
       <div class="fline">${a.detail}</div>
@@ -1772,17 +1776,38 @@ canvas.addEventListener("click", e => {
   const r = canvas.getBoundingClientRect();
   const x = e.clientX - r.left;
   if (x >= S.view.plotW) return;
-  const idx = Math.max(S.view.i0, Math.min(S.view.i1, S.view.i0 + Math.floor(x / S.view.bw)));
-  S.selT = S.candles[idx].t;
-  draw();
-  renderRead(idx);
-  showTab("read");
+  selectBar(Math.max(S.view.i0, Math.min(S.view.i1, S.view.i0 + Math.floor(x / S.view.bw))));
 });
 $("readnow").onclick = () => {
   if (!S.candles.length) return;
-  const i = S.candles.length - 1;   // the live, still-forming bar — what "current" means
-  S.selT = S.candles[i].t; draw(); renderRead(i); showTab("read");
+  selectBar(S.candles.length - 1);  // the live, still-forming bar — what "current" means
 };
+
+/* ← / → step the selection one bar (Shift: ten). draw() anchors the window to
+   the right edge with no pan offset, so stepping off the left means widening
+   the window — the same zoom the wheel drives — rather than selecting a bar
+   that isn't on screen. */
+const MIN_READ_BAR = 45;   // readState() needs this much indicator warm-up
+document.addEventListener("keydown", e => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && (/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName) || t.isContentEditable)) return;
+  const cs = S.candles;
+  if (!cs.length || !S.view) return;
+  e.preventDefault();
+  // no selection yet (or it died with a symbol/timeframe change): anchor live
+  let cur = S.selT != null ? cs.findIndex(b => b.t === S.selT) : -1;
+  if (cur < 0){ selectBar(cs.length - 1); return; }
+  const step = (e.shiftKey ? 10 : 1) * (e.key === "ArrowRight" ? 1 : -1);
+  const floor = Math.max(MIN_READ_BAR, cs.length - MAX_BARS_VISIBLE);
+  const next = Math.max(floor, Math.min(cs.length - 1, cur + step));
+  if (next === cur) return;
+  // keep it drawn: widen the window if the step lands left of it
+  if (next < S.view.i0)
+    S.barsVisible = Math.min(MAX_BARS_VISIBLE, cs.length - next);
+  selectBar(next);
+});
 
 /* ============================== trade journal ============================== */
 const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered during squeeze/chop",
