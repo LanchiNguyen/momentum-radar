@@ -195,6 +195,7 @@
     <select id="source" aria-label="data source">
       <option value="">Auto source</option>
       <option value="twelvedata">Twelve Data (stocks)</option>
+      <option value="alpaca">Alpaca (stocks · bigger free limit)</option>
       <option value="binance">Binance</option>
       <option value="binanceus">Binance.US</option>
       <option value="coinbase">Coinbase</option>
@@ -207,6 +208,13 @@
     <input id="fhkey" type="password" placeholder="tick key (optional)" spellcheck="false"
            title="Optional second free key from finnhub.io — streams every trade so the chart ticks live like TradingView. Without it the chart refreshes every 12s.">
     <a id="fhlink" href="https://finnhub.io/register" target="_blank" rel="noopener" title="Free real-time US stock trades (email signup, no card)">get tick key</a>
+  </div>
+  <div class="ctl">
+    <input id="akey" type="password" placeholder="Alpaca key ID (optional)" spellcheck="false"
+           title="Alpaca's free tier is 200 calls/min with no daily cap — the source to switch to when Twelve Data runs out. Its free volume is IEX-only (a few percent of the real tape), so RVOL still works but the volume profile is built from a thin slice. IMPORTANT: Alpaca keys are account credentials, not a read-only data token — generate them from a PAPER account. Saved in this browser and in the page address, so don't share that link.">
+    <input id="asec" type="password" placeholder="Alpaca secret (optional)" spellcheck="false"
+           title="The secret half of the Alpaca pair. Generate it from a PAPER account — a live-account pair can place real trades, and this page keeps keys in the page address.">
+    <a id="alink" href="https://app.alpaca.markets/signup" target="_blank" rel="noopener" title="Free signup — then generate PAPER account keys">get alpaca keys</a>
   </div>
   <div class="ctl"><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
   <div id="livebox"><span class="pulse"></span><span id="clock">—</span></div>
@@ -391,6 +399,8 @@ const S = {
   resolvedSym: "",      // symbol in that source's own notation
   forceSource: "",      // "" = auto-probe, otherwise pin to one source id
   pollTimer: null,      // live updates for sources with no stream
+  pollIdle: 0,          // consecutive polls that returned nothing new (backoff)
+  quotaOut: null,       // source id whose provider limit we've hit today
   tickWs: null,         // Finnhub real-time trade stream (optional)
   tickLive: false,      // true once real trades are flowing
   tickDir: 0,           // direction of the last tick, for the price line
@@ -417,6 +427,13 @@ const PLANS = {
     native: { "1m":60, "5m":300, "15m":900, "1h":3600 },
     derived: { "3m":["1m",3], "30m":["15m",2], "45m":["15m",3], "2h":["1h",2] },
   },
+};
+// Alpaca takes an arbitrary "N Min"/"N Hour" timeframe, so every one of ours
+// is native — nothing is resampled, and no request is spent on a base feed.
+PLANS.alpaca = {
+  native: { "1m":"1Min", "3m":"3Min", "5m":"5Min", "15m":"15Min",
+            "30m":"30Min", "45m":"45Min", "1h":"1Hour", "2h":"2Hour" },
+  derived: {},
 };
 PLANS.binanceus = PLANS.binance;
 
@@ -449,13 +466,53 @@ function getTdKey(){ try { return localStorage.getItem("tdkey") || ""; } catch(e
 function setTdKey(k){ try { localStorage.setItem("tdkey", k); } catch(e){} }
 function getFhKey(){ try { return localStorage.getItem("fhkey") || ""; } catch(e){ return ""; } }
 function setFhKey(k){ try { localStorage.setItem("fhkey", k); } catch(e){} }
+/* Alpaca needs a pair, and unlike the others these are ACCOUNT credentials —
+   the same pair can trade. Generate them from a paper account. */
+function getAKey(){ try { return localStorage.getItem("akey") || ""; } catch(e){ return ""; } }
+function setAKey(k){ try { localStorage.setItem("akey", k); } catch(e){} }
+function getASec(){ try { return localStorage.getItem("asec") || ""; } catch(e){ return ""; } }
+function setASec(k){ try { localStorage.setItem("asec", k); } catch(e){} }
 function writeKeyHash(){
   try {
     const parts = [];
     if (getTdKey()) parts.push("key=" + getTdKey());
     if (getFhKey()) parts.push("fh=" + getFhKey());
+    if (getAKey()) parts.push("ak=" + getAKey());
+    if (getASec()) parts.push("as=" + getASec());
     history.replaceState(null, "", parts.length ? "#" + parts.join("&") : "#");
   } catch(e){}
+}
+
+/* Every request the tool makes is counted, per provider, per local day. Free
+   tiers are small enough that "am I about to run out" is information the
+   trader needs on screen, not a surprise when the chart goes quiet. */
+const DAILY_CAP = { twelvedata: 800 };   // documented free-tier daily limits
+function usageToday(){
+  const day = new Date().toDateString();
+  try {
+    const u = JSON.parse(localStorage.getItem("mrusage") || "{}");
+    if (u.day === day && u.counts) return u;
+  } catch(e){}
+  return { day, counts:{} };
+}
+function countRequest(srcId){
+  const u = usageToday();
+  u.counts[srcId] = (u.counts[srcId] || 0) + 1;
+  try { localStorage.setItem("mrusage", JSON.stringify(u)); } catch(e){}
+  return u.counts[srcId];
+}
+function usageNote(srcId){
+  const n = usageToday().counts[srcId] || 0;
+  const cap = DAILY_CAP[srcId];
+  return cap ? ` · ${n}/${cap} calls today` : "";
+}
+/* A provider saying "you're done for today" is not a transient blip, so it must
+   never be retried in a loop. Twelve Data sends it as HTTP 429, or as HTTP 200
+   with an error body — both are checked. */
+function isQuotaError(status, body){
+  if (status === 429) return true;
+  const c = body && (body.code || body.status);
+  return c === 429 || (typeof body?.message === "string" && /limit|quota/i.test(body.message));
 }
 
 /* Data sources, tried in order until one answers. api.binance.com refuses US
@@ -465,6 +522,8 @@ function writeKeyHash(){
 const SOURCES = [
   {
     id:"twelvedata", label:"Twelve Data (stocks)", needsKey:true, poll:true,
+    hasKey: () => !!getTdKey(),
+    keyHint: "needs your free twelvedata.com key (paste it in the header)",
     sym: s => s.toUpperCase().trim(),
     rest: (s,p,n) => `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(s)}` +
       `&interval=${p}&outputsize=${n}&timezone=UTC&apikey=${encodeURIComponent(getTdKey())}`,
@@ -476,6 +535,29 @@ const SOURCES = [
       return j.values.slice().reverse().map(v => ({
         t: Date.parse(v.datetime.replace(" ","T") + "Z"),
         o:+v.open, h:+v.high, l:+v.low, c:+v.close, v:+(v.volume || 0), closed:true }));
+    },
+  },
+  {
+    /* Alpaca's free Basic tier is 200 calls/min with no daily cap, so it is the
+       place to go when Twelve Data's 800/day runs out. The catch is the feed:
+       free equity data is IEX only, a few percent of the consolidated tape.
+       RVOL survives that (it is a ratio against the same feed's own average),
+       but raw volume and the volume profile are built from a thin slice — the
+       status line says so whenever this source is the one answering. */
+    id:"alpaca", label:"Alpaca (stocks · IEX volume)", needsKey:true, poll:true,
+    hasKey: () => !!(getAKey() && getASec()),
+    keyHint: "needs both Alpaca keys — key ID and secret (paste them in the header)",
+    sym: s => s.toUpperCase().trim(),
+    rest: (s,p,n) => `https://data.alpaca.markets/v2/stocks/${encodeURIComponent(s)}/bars` +
+      `?timeframe=${encodeURIComponent(p)}&limit=${Math.min(10000,n)}&feed=iex&sort=desc`,
+    headers: () => ({ "APCA-API-KEY-ID": getAKey(), "APCA-API-SECRET-KEY": getASec() }),
+    // {bars:[{t:ISO,o,h,l,c,v},...]} newest first with sort=desc
+    parse: j => {
+      if (!j) throw new Error("unexpected data");
+      if (j.message && !j.bars) throw new Error(j.message);
+      if (!Array.isArray(j.bars)) throw new Error("no candles in response");
+      return j.bars.slice().reverse().map(b => ({
+        t: Date.parse(b.t), o:+b.o, h:+b.h, l:+b.l, c:+b.c, v:+(b.v || 0), closed:true }));
     },
   },
   {
@@ -877,7 +959,7 @@ function sourceOrder(){
   if (S.forceSource) return SOURCES.filter(s => s.id === S.forceSource);
   // keep the keyless stock source in the list for stock-looking symbols, so the
   // failure message can say "needs your free API key" instead of vanishing
-  const stocks = SOURCES.filter(s => s.needsKey && (getTdKey() || !looksCrypto(S.symbol)));
+  const stocks = SOURCES.filter(s => s.needsKey && (s.hasKey() || !looksCrypto(S.symbol)));
   const crypto = SOURCES.filter(s => !s.needsKey);
   return looksCrypto(S.symbol) ? [...crypto, ...stocks] : [...stocks, ...crypto];
 }
@@ -888,15 +970,22 @@ async function loadHistory(gen){
   if (!list.length) throw new Error("no source available — check the source dropdown / stock key");
   for (const src of list){
     if (gen !== undefined && gen !== S.loadGen) throw new Error("superseded");
-    if (src.needsKey && !getTdKey()){ tried.push(`${src.label}: needs your free API key (paste it in the header)`); continue; }
+    if (src.needsKey && !src.hasKey()){ tried.push(`${src.label}: ${src.keyHint}`); continue; }
     const plan = planFor(src.id, S.tf);
     if (!plan){ tried.push(`${src.label}: no ${S.tf} data`); continue; }
     const sym = src.sym(S.symbol);
     setStatus(`trying ${src.label} · ${sym}…`);
     try{
-      const res = await fetch(src.rest(sym, plan.param, 500 * plan.factor), { cache:"no-store" });
+      countRequest(src.id);
+      const res = await fetch(src.rest(sym, plan.param, 500 * plan.factor),
+                              { cache:"no-store", headers: src.headers ? src.headers() : {} });
       if (gen !== undefined && gen !== S.loadGen) throw new Error("superseded");
       let body = null; try { body = await res.json(); } catch(e){}
+      if (isQuotaError(res.status, body)){
+        S.quotaOut = src.id;
+        tried.push(`${src.label}: daily free limit reached${DAILY_CAP[src.id] ? ` (${DAILY_CAP[src.id]} calls)` : ""} — pick another source`);
+        continue;
+      }
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
       cs = cs.filter(b => isFinite(b.t) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c));
@@ -910,7 +999,11 @@ async function loadHistory(gen){
       S.lastDataAt = Date.now();
       return;
     }catch(e){
-      tried.push(`${src.label}: ${e.name === "TypeError" ? "blocked/unreachable" : e.message}`);
+      const blocked = e.name === "TypeError";
+      tried.push(`${src.label}: ${blocked
+        ? (src.headers ? "blocked before the request went out — this source authenticates with headers, so the browser must clear a CORS preflight first. Hit Diagnose to confirm, then use another source."
+                       : "blocked/unreachable")
+        : e.message}`);
     }
   }
   throw new Error(tried.join(" · "));
@@ -920,8 +1013,9 @@ function connectWS(){
   disconnectWS();
   const src = S.source; if (!src) return;
   if (src.poll || (S.plan && S.plan.factor > 1)){
-    setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} — refreshes every 12s${getFhKey() ? "" : " (add a free finnhub.io key for tick-by-tick)"}`, "live");
-    S.pollTimer = setInterval(pollOnce, 12000);
+    setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf}${getFhKey() ? "" : " — add a free finnhub.io key for tick-by-tick"}${usageNote(src.id)}${thinVolume() ? " · volume is IEX-only" : ""}`, "live");
+    S.pollIdle = 0;
+    schedulePoll();
     return;
   }
   let ws;
@@ -995,9 +1089,56 @@ function coinbaseAttach(ws, sym, tf){
 }
 function disconnectWS(){
   if (S.ws){ const w=S.ws; S.ws=null; try{w.close();}catch(e){} }
-  if (S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer = null; }
+  if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
   disconnectTicks();
 }
+
+/* How often to spend a request. Free stock tiers are measured in hundreds per
+   DAY, so a flat 12s interval (300/hour) burns Twelve Data's 800 before lunch.
+   Spend only when information actually arrives:
+     · tab hidden        — nobody is looking; don't spend at all
+     · ticks streaming   — the price is already live, so REST is only needed to
+                           confirm the closed bar: once per bar, not per 12s
+     · nothing changing  — back off toward 5 minutes (nights, weekends, halts)
+   Anything new resets the backoff, so an active market still feels immediate. */
+const POLL_BASE = 12e3, POLL_MAX = 300e3;
+function nextPollDelay(){
+  const mult = Math.pow(2, Math.min(S.pollIdle, 5));
+  if (S.tickLive){
+    const nb = nextBarClose();
+    const untilClose = nb ? nb + 4000 - Date.now() : POLL_BASE * mult;
+    return Math.min(POLL_MAX, Math.max(20e3, untilClose));
+  }
+  return Math.min(POLL_MAX, POLL_BASE * mult);
+}
+function schedulePoll(){
+  if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
+  if (S.quotaOut) return;                     // the provider is done for today
+  if (typeof document !== "undefined" && document.hidden) return;   // resumes on visibilitychange
+  S.pollTimer = setTimeout(async () => {
+    S.pollTimer = null;
+    const r = await pollOnce();
+    if (r === "quota") return;                // pollOnce already said so
+    S.pollIdle = r === "new" ? 0 : S.pollIdle + 1;
+    schedulePoll();
+  }, nextPollDelay());
+}
+/* A backgrounded tab spends nothing; coming back is worth one immediate call. */
+document.addEventListener("visibilitychange", () => {
+  if (!S.source || !(S.source.poll || (S.plan && S.plan.factor > 1))) return;
+  if (document.hidden){
+    if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
+  } else if (!S.pollTimer && !S.quotaOut){
+    S.pollIdle = 0;
+    S.pollTimer = setTimeout(async () => {
+      S.pollTimer = null;
+      const r = await pollOnce();
+      if (r === "quota") return;
+      S.pollIdle = r === "new" ? 0 : S.pollIdle + 1;
+      schedulePoll();
+    }, 0);
+  }
+});
 
 /* Real-time trades from Finnhub (optional second key). Each trade updates the
    forming candle immediately, so the chart ticks like a real terminal instead
@@ -1005,7 +1146,7 @@ function disconnectWS(){
    authority on completed bars and volume. */
 function connectTicks(){
   disconnectTicks();
-  if (!getFhKey() || (S.source && S.source.id !== "twelvedata")) return;   // ticks are for the stock feed
+  if (!getFhKey() || !(S.source && S.source.needsKey)) return;   // ticks are for the stock feeds
   let ws;
   try { ws = new WebSocket("wss://ws.finnhub.io?token=" + encodeURIComponent(getFhKey())); } catch(e){ return; }
   S.tickWs = ws;
@@ -1049,17 +1190,25 @@ function disconnectTicks(){
 
 /* Polling refresh for sources with no stream: re-fetch the last few bars and
    merge them onto the chart. Alerts still fire only when a bar rolls over. */
+/* Returns what the round was worth, so the scheduler can pace the next one:
+   "new" (fresh data), "idle" (nothing changed), "quota" (provider is done for
+   the day — stop entirely) or "error" (transient; back off and retry). */
 async function pollOnce(){
   const src = S.source;
-  if (!src || !(src.poll || (S.plan && S.plan.factor > 1))) return;
+  if (!src || !(src.poll || (S.plan && S.plan.factor > 1))) return "idle";
   try{
     const plan = S.plan || { param:S.tf, factor:1 };
-    const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)), { cache:"no-store" });
-    if (!res.ok) return;                       // transient — keep the last good chart
-    let fresh = src.parse(await res.json());
+    countRequest(src.id);
+    const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)),
+                            { cache:"no-store", headers: src.headers ? src.headers() : {} });
+    let body = null;
+    try { body = await res.json(); } catch(e){}
+    if (isQuotaError(res.status, body)) return outOfQuota(src);
+    if (!res.ok) return "error";                // transient — keep the last good chart
+    let fresh = src.parse(body);
     if (plan.factor > 1) fresh = resampleTf(fresh, TF_MS[S.tf]);
     if (fresh.length > 1) fresh = fresh.slice(1);   // oldest bucket may be missing its early base bars
-    if (!fresh.length) return;
+    if (!fresh.length) return "idle";
     const cs = S.candles;
     // a sleep/stall longer than the fetch window would splice bars across a
     // hole and corrupt every windowed indicator — resync history instead
@@ -1067,9 +1216,11 @@ async function pollOnce(){
       const gen = S.loadGen;
       await loadHistory(gen);
       if (gen === S.loadGen) refresh(false);
-      return;
+      return "new";
     }
     let closedAny = false;
+    const prevLastT = cs.length ? cs[cs.length-1].t : 0;
+    const prevLastC = cs.length ? cs[cs.length-1].c : NaN;
     for (const b of fresh){
       const last = cs[cs.length-1];
       if (!last){ cs.push({ ...b, closed:false }); continue; }
@@ -1086,14 +1237,28 @@ async function pollOnce(){
     }
     S.lastDataAt = Date.now();
     refresh(closedAny);
-    const age = Date.now() - cs[cs.length-1].t;
-    if (S.tickLive) return;                               // stream status wins
+    const last = cs[cs.length-1];
+    const moved = last.t !== prevLastT || last.c !== prevLastC;
+    const age = Date.now() - last.t;
+    if (S.tickLive) return moved ? "new" : "idle";        // stream status wins
     if (age > 3*TF_MS[S.tf] + 60e3){
-      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(cs[cs.length-1].t)} ${etZone()} (market closed, or the feed is delayed)`);
+      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(last.t)} ${etZone()} (market closed, or the feed is delayed)${usageNote(src.id)}`);
     } else {
-      setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(cs[cs.length-1].c)} · updated ${etHMS(Date.now())} ${etZone()}`, "live");
+      setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(last.c)} · updated ${etHMS(Date.now())} ${etZone()}${usageNote(src.id)}`, "live");
     }
-  }catch(e){}                                  // transient — next tick retries
+    return moved ? "new" : "idle";
+  }catch(e){ return "error"; }                 // transient — next round retries
+}
+
+/* The provider is spent for the day. Retrying costs nothing but keeps the
+   chart looking broken, so stop and say exactly what to do about it. */
+function outOfQuota(src){
+  S.quotaOut = src.id;
+  if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
+  const cap = DAILY_CAP[src.id];
+  setStatus(`${src.label} daily free limit reached${cap ? ` (${cap} calls)` : ""} — the chart above is the last good data. `
+    + `Pick another source in the dropdown, or come back after midnight UTC.`, "err");
+  return "quota";
 }
 
 
@@ -1453,6 +1618,7 @@ async function start(){
   const gen = ++S.loadGen;
   disconnectWS();
   S.firedKeys.clear(); S.selT = null; S.lastAlertT = 0;
+  S.quotaOut = null; S.pollIdle = 0;
   S.levels = null; S.levelsKey = null;
   S.liveRead = null; S.liveReadT = null; S.liveKey = null; renderVerdictBar();
   const ro = $("readout");
@@ -1483,23 +1649,30 @@ document.querySelectorAll(".tfbtn").forEach(b => b.onclick = () => {
    separates them: it resolves opaque when the host is genuinely reachable and
    only a CORS/policy layer blocked the real read. */
 async function probeSource(src){
-  if (src.needsKey && !getTdKey())
-    return { host:"api.twelvedata.com", ok:false,
-             verdict:"no API key set — stocks need a free key from twelvedata.com (paste it in the header)" };
-  const sym = src.sym(S.symbol);
-  const plan = planFor(src.id, S.tf) || planFor(src.id, "5m");
+  const sym0 = src.sym(S.symbol);
+  const plan0 = planFor(src.id, S.tf) || planFor(src.id, "5m");
+  const host0 = (() => { try { return new URL(src.rest(sym0, plan0.param, 10)).host; } catch(e){ return src.label; } })();
+  if (src.needsKey && !src.hasKey())
+    return { host: host0, ok:false, verdict: src.keyHint };
+  const sym = sym0, plan = plan0;
   const url = src.rest(sym, plan.param, 10);
-  const host = (() => { try { return new URL(url).host; } catch(e){ return url; } })();
+  const host = host0;
   try{
-    const res = await fetch(url, { cache:"no-store" });
-    if (res.ok) return { host, ok:true, verdict:`reachable — HTTP ${res.status}, data OK` };
+    const res = await fetch(url, { cache:"no-store", headers: src.headers ? src.headers() : {} });
+    let body = null; try { body = await res.clone().json(); } catch(e){}
+    if (isQuotaError(res.status, body))
+      return { host, ok:false, verdict:`daily free limit reached${DAILY_CAP[src.id] ? ` (${DAILY_CAP[src.id]} calls)` : ""} — use another source until it resets` };
+    if (res.ok) return { host, ok:true, verdict:`reachable — HTTP ${res.status}, data OK${usageNote(src.id)}` };
     return { host, ok:false, verdict:`HTTP ${res.status}` +
       (res.status === 451 ? " — geo-blocked (this exchange refuses your country)" :
+       res.status === 401 || res.status === 403 ? " — the key was rejected (wrong key, or the wrong half of an Alpaca pair)" :
        res.status === 404 ? ` — no such pair "${sym}" here` : "") };
   }catch(e){
     try{
       await fetch(url, { mode:"no-cors", cache:"no-store" });
-      return { host, ok:false, verdict:"host IS reachable, but the browser blocked the response — an extension (ad/privacy/script blocker), Brave Shields, or a corporate proxy" };
+      return { host, ok:false, verdict: src.headers
+        ? "host IS reachable, but the browser blocked the response — this source needs auth headers, so it must pass a CORS preflight and this one didn't. Nothing you can change from here; use another source."
+        : "host IS reachable, but the browser blocked the response — an extension (ad/privacy/script blocker), Brave Shields, or a corporate proxy" };
     }catch(e2){
       return { host, ok:false, verdict:"no connection at all — DNS, firewall, VPN, or network-level block" };
     }
@@ -1544,6 +1717,10 @@ $("tdkey").addEventListener("change", e => {
   writeKeyHash();
   start();
 });
+$("akey").value = getAKey();
+$("asec").value = getASec();
+$("akey").addEventListener("change", e => { setAKey(e.target.value.trim()); writeKeyHash(); start(); });
+$("asec").addEventListener("change", e => { setASec(e.target.value.trim()); writeKeyHash(); start(); });
 $("notifbtn").onclick = async () => {
   if (!("Notification" in window)) { $("notifbtn").textContent = "Notifications unsupported here"; return; }
   const p = await Notification.requestPermission();
@@ -1567,6 +1744,10 @@ canvas.addEventListener("wheel", e => {
 /* Everything quoted here is measured from the candles already on the chart —
    no lookahead in the score (only bars up to i), and every percentage carries
    its sample size. Small samples say so instead of pretending. */
+
+/* True when the answering source reports only a slice of the consolidated
+   tape. Price is fine; anything built from volume SIZE is a sample. */
+function thinVolume(){ return !!(S.source && S.source.id === "alpaca"); }
 
 function esc(s){ return String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch])); }
 
@@ -1723,7 +1904,9 @@ function renderRead(i){
   if (a.lvl) rows.push(["Value area top", a.lvl.vah], ["POC (magnet)", a.lvl.poc], ["Value area bottom", a.lvl.val]);
   const lvlHtml = rows.length ? `<div class="card"><h3>The levels that matter ($)</h3>` + rows
     .map(([nm,p]) => `<div class="fline"><span>${nm}</span><b>&nbsp;$${fmtPx(p)}</b><span class="fpct">${p >= a.c.c ? "+" : "−"}$${fmtPx(Math.abs(p - a.c.c))} away</span></div>`).join("") +
-    `<div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). Targets beyond the next level need the level to break first; stops inside 1 ATR get hit by noise.</div></div>` : "";
+    `<div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). Targets beyond the next level need the level to break first; stops inside 1 ATR get hit by noise.</div>` +
+    (a.lvl && thinVolume() ? `<div class="fline hint">⚠ These value-area levels are built from ${S.source.label}'s volume, which on the free tier is IEX only — a few percent of the real tape. Direction and RVOL still hold; treat the POC as approximate.</div>` : "") +
+    `</div>` : "";
 
   // practice mode: a historical click reveals what actually happened
   let revealHtml = "";
@@ -2187,6 +2370,10 @@ const keyFromLink = location.hash.match(/(?:^|[#&])key=([\w-]+)/);
 if (keyFromLink){ setTdKey(keyFromLink[1]); $("tdkey").value = keyFromLink[1]; }
 const fhFromLink = location.hash.match(/(?:^|[#&])fh=([\w-]+)/);
 if (fhFromLink){ setFhKey(fhFromLink[1]); $("fhkey").value = fhFromLink[1]; }
+const akFromLink = location.hash.match(/(?:^|[#&])ak=([\w-]+)/);
+if (akFromLink){ setAKey(akFromLink[1]); $("akey").value = akFromLink[1]; }
+const asFromLink = location.hash.match(/(?:^|[#&])as=([\w-]+)/);
+if (asFromLink){ setASec(asFromLink[1]); $("asec").value = asFromLink[1]; }
 if (getTdKey() || getFhKey()) writeKeyHash();
 
 start();

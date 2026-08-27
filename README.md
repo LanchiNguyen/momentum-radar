@@ -70,18 +70,51 @@ Open the live URL, or download `index.html` and double-click it.
 **US stocks / ETFs** (SPY, QQQ, NVDA...): needs a free API key from
 [twelvedata.com](https://twelvedata.com/register) — email signup, no card.
 Paste it in the header's key field; it is stored only in your browser's
-localStorage and sent nowhere except Twelve Data itself. Stock charts
-refresh by polling every 12 seconds (the free tier has no stream), and
-regular-hours bars only.
+localStorage and sent nowhere except Twelve Data itself. Regular-hours bars
+only.
 
 **Tick-by-tick (optional):** a second free key from
 [finnhub.io](https://finnhub.io/register) streams every US-stock trade over a
 websocket, so the forming candle ticks live like a real terminal. Paste it in
-the "tick key" field. The poll keeps running underneath as the authority on
-completed bars and volume.
+the "tick key" field.
 
-Both keys are also written into the page URL's hash — bookmark the page after
-entering them once and the bookmark carries them to any device.
+**Bigger free limit (optional):** [Alpaca](https://app.alpaca.markets/signup)
+allows 200 calls/minute with no daily cap, against Twelve Data's 800/day — it
+is the source to switch to when the day's quota is gone. Two caveats worth
+knowing before you use it:
+
+- Its free equity feed is **IEX only**, a few percent of the consolidated
+  tape. RVOL is unaffected (it compares a feed against its own average), but
+  raw volume bars and the volume profile are built from a thin slice. The
+  status line says so whenever Alpaca is the source answering.
+- **Alpaca keys are account credentials, not a read-only data token.**
+  Generate them from a *paper* account.
+
+Alpaca's data host has historically rejected the CORS preflight that a
+browser must send with auth headers. If that is still true for you, the chart
+will say so and Diagnose will name it; nothing else breaks, and Twelve Data
+stays the default.
+
+### Spending the quota
+
+Free stock tiers are measured in hundreds of calls per *day*, so the tool
+paces itself rather than polling on a fixed clock:
+
+- **Tab hidden** — no requests at all; returning to the tab fires one
+  immediately.
+- **Ticks streaming** — the price is already live, so a request is spent only
+  to confirm each closed bar (about 12/hour on 5m, not 300).
+- **Nothing changing** — the interval backs off toward 5 minutes, which
+  covers nights, weekends and halts without a market calendar.
+
+The status line carries a running `n/800 calls today` count, and hitting a
+provider's limit stops the loop with a message naming the limit — rather than
+the chart silently going stale.
+
+All keys are also written into the page URL's hash — bookmark the page after
+entering them once and the bookmark carries them to any device. That makes the
+bookmark itself a secret: don't share it, and doubly so with an Alpaca pair in
+it.
 
 **Crypto**: keyless. Binance, Binance.US and Coinbase are tried in order,
 because binance.com refuses US traffic; the source dropdown can pin one.
