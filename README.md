@@ -12,6 +12,23 @@ bored and hoping, then bleeding premium to theta while price chops sideways.
 Everything here encodes one rule — **compression tells you a move is loading,
 volume tells you the move is real, and only the combination is an entry.**
 
+## What the reads are built on
+
+The tape (net drift of the last 6 closes) is **clamped to the current
+session** on stock feeds — an overnight gap is not momentum, so the first
+bars of a session say "session just opened" instead of flashing a
+gap-inflated MOVING. RVOL compares each bar to the average of the **same
+time-of-day** on prior days, so the 9:30 rush and the lunch lull are judged
+against themselves, not a flat average. Reads of past bars recompute levels
+causally (no future pivots — practice mode can't cheat), a read is identical
+at any zoom, borderline reads say so, and backtest outcomes stop at the
+session close because a day trader is flat overnight.
+
+A **state timeline** under the verdict strip shows today's path — when the
+chart flipped from quiet to coiling to moving — and each chip clicks through
+to that bar's full read. "Read current bar" follows the live bar as data
+arrives; ‹ › buttons (or ← →) step bar by bar.
+
 ## The design principle
 
 An honest tool for an efficient intraday market cannot predict — the built-in
@@ -100,16 +117,28 @@ stays the default.
 Free stock tiers are measured in hundreds of calls per *day*, so the tool
 paces itself rather than polling on a fixed clock:
 
+- **Base cadence fits the budget** — daily-capped sources refresh at a sixth
+  of a bar (50s on 5m), so a full session plus loads fits 800/day with room.
+  A free Finnhub tick key restores true real-time on top.
 - **Tab hidden** — no requests at all; returning to the tab fires one
   immediately.
 - **Ticks streaming** — the price is already live, so a request is spent only
-  to confirm each closed bar (about 12/hour on 5m, not 300).
+  to confirm each closed bar.
 - **Nothing changing** — the interval backs off toward 5 minutes, which
   covers nights, weekends and halts without a market calendar.
+- A per-minute throttle (Twelve Data allows 8 calls/min) is treated as the
+  60-second problem it is — it pauses briefly instead of killing the day.
 
 The status line carries a running `n/800 calls today` count, and hitting a
 provider's limit stops the loop with a message naming the limit — rather than
-the chart silently going stale.
+the chart silently going stale. **LIVE means live**: the header clock counts
+seconds since the newest bar actually *changed*, not since the last HTTP
+response, so a provider replaying stale data cannot look healthy. During
+market hours a stalled feed turns the status red; after hours it just says
+the market is closed. **Diagnose** answers the real question — it shows the
+timestamp of the newest bar every source would serve right now, flags the
+stale ones, and offers a one-click reload; it lives in its own panel and
+never touches the signal log.
 
 All keys are also written into the page URL's hash — bookmark the page after
 entering them once and the bookmark carries them to any device. That makes the

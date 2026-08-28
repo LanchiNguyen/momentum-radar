@@ -69,7 +69,19 @@
   @keyframes beat{0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.25; transform:scale(.75);}}
   #status{font-size:12px; color:var(--muted);}
   #status.live{color:var(--good);}
-  #status.err{color:var(--down);}
+  /* a dead feed or spent quota is a trading-desk event, not a footnote */
+  #status.err{color:#fff; background:var(--down); padding:4px 10px; border-radius:6px;
+    font-size:13px; font-weight:600;}
+  #datarow{display:flex; flex-wrap:wrap; gap:10px; align-items:center; width:100%; order:9;
+    padding-top:6px; border-top:1px dashed var(--border);}
+  #vb-hist{display:flex; gap:5px; align-items:center; padding:3px 16px 7px; font-size:11px;
+    color:var(--muted); overflow-x:auto; white-space:nowrap; background:var(--panel);
+    border-bottom:1px solid var(--border);}
+  .histchip{background:var(--bg); border:1px solid var(--border); color:var(--muted);
+    border-radius:5px; padding:1px 7px; font-size:11px; cursor:pointer; flex:none;}
+  .histchip.up{color:var(--good); border-color:var(--good);}
+  .histchip.down{color:var(--down); border-color:var(--down);}
+  .histarrow{color:var(--border); flex:none;}
   #verdictbar{display:flex; align-items:center; gap:12px; padding:7px 16px; background:var(--panel);
     border-bottom:1px solid var(--border); cursor:pointer; flex-wrap:wrap; user-select:none;}
   #verdictbar:hover{filter:brightness(1.03);}
@@ -191,6 +203,7 @@
     <button class="tfbtn" data-tf="1h">1h</button>
     <button class="tfbtn" data-tf="2h">2h</button>
   </div>
+  <div id="datarow" hidden>
   <div class="ctl">
     <select id="source" aria-label="data source">
       <option value="">Auto source</option>
@@ -216,7 +229,8 @@
            title="The secret half of the Alpaca pair. Generate it from a PAPER account — a live-account pair can place real trades, and this page keeps keys in the page address.">
     <a id="alink" href="https://app.alpaca.markets/signup" target="_blank" rel="noopener" title="Free signup — then generate PAPER account keys">get alpaca keys</a>
   </div>
-  <div class="ctl"><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
+  </div>
+  <div class="ctl"><button id="databtn" title="data sources &amp; API keys">⚙ data</button><button id="diag">Diagnose</button><button id="themebtn" title="light / dark">🌙</button></div>
   <div id="livebox"><span class="pulse"></span><span id="clock">—</span></div>
   <span id="status">connecting…</span>
 </header>
@@ -226,6 +240,7 @@
   <span id="vb-chips"></span>
   <span class="hint" id="vb-when"></span>
 </div>
+<div id="vb-hist" hidden></div>
 
 <main>
   <div id="chartwrap">
@@ -237,7 +252,9 @@
     <div class="tabbar">
       <button class="tabbtn" data-tab="read">Read</button>
       <button class="tabbtn active" data-tab="alerts">Alerts <span id="tab-dot"></span></button>
-      <button id="readnow" title="Score the live, still-forming bar">Read current bar</button>
+      <button id="readnow" title="Read the live, still-forming bar — and keep following it">Read current bar</button>
+      <button id="stepback" title="previous bar (←)">‹</button>
+      <button id="stepfwd" title="next bar (→)">›</button>
     </div>
 
     <div class="tabpane" data-pane="read" hidden>
@@ -245,6 +262,7 @@
     </div>
 
     <div class="tabpane" data-pane="alerts">
+    <div id="diagout" hidden></div>
     <h2>Alerts — fire on bar close only</h2>
     <div id="alertopts">
       <label><input type="checkbox" id="opt-squeeze" checked> Squeeze release (+ direction)</label>
@@ -401,11 +419,17 @@ const S = {
   pollTimer: null,      // live updates for sources with no stream
   pollIdle: 0,          // consecutive polls that returned nothing new (backoff)
   quotaOut: null,       // source id whose provider limit we've hit today
+  histLvl: null,        // memoized causal level set for one historical read
+  histLvlKey: "",
+  stateHist: [],        // closed-bar state transitions — the "what changed" trail
+  followLive: false,    // Read pane tracks the newest bar as data arrives
   tickWs: null,         // Finnhub real-time trade stream (optional)
   tickLive: false,      // true once real trades are flowing
   tickDir: 0,           // direction of the last tick, for the price line
   lastDraw: 0,          // throttle for tick-driven redraws
-  lastDataAt: 0,        // wall time of the last real data update (poll or tick)
+  lastDataAt: 0,        // wall time the feed last ANSWERED (HTTP ok / socket msg)
+  lastNewData: 0,       // wall time the newest bar actually CHANGED — what LIVE means
+  alerts: [],           // fired signals, newest first (the DOM is just a view of this)
   loadGen: 0,           // increments per start(); stale async work checks it
   btCollect: null,      // when set, fireAlert records into it instead of ringing
 };
@@ -488,7 +512,7 @@ function writeKeyHash(){
    trader needs on screen, not a surprise when the chart goes quiet. */
 const DAILY_CAP = { twelvedata: 800 };   // documented free-tier daily limits
 function usageToday(){
-  const day = new Date().toDateString();
+  const day = new Date().toISOString().slice(0, 10);   // UTC — when Twelve Data actually resets
   try {
     const u = JSON.parse(localStorage.getItem("mrusage") || "{}");
     if (u.day === day && u.counts) return u;
@@ -506,13 +530,20 @@ function usageNote(srcId){
   const cap = DAILY_CAP[srcId];
   return cap ? ` · ${n}/${cap} calls today` : "";
 }
-/* A provider saying "you're done for today" is not a transient blip, so it must
-   never be retried in a loop. Twelve Data sends it as HTTP 429, or as HTTP 200
-   with an error body — both are checked. */
-function isQuotaError(status, body){
-  if (status === 429) return true;
-  const c = body && (body.code || body.status);
-  return c === 429 || (typeof body?.message === "string" && /limit|quota/i.test(body.message));
+/* Two very different 429s: Twelve Data throttles at 8 calls/MINUTE and caps at
+   800/DAY, and both arrive as 429 (or HTTP 200 with an error body). Treating a
+   minute-throttle as the daily cap killed live polling for the rest of the day
+   over a 60-second problem. The message text distinguishes them; a bare 429
+   with no text is judged by how much of the day's budget is actually spent. */
+function quotaKind(status, body, srcId){
+  const msg = typeof body?.message === "string" ? body.message : "";
+  const is429 = status === 429 || (body && (body.code === 429 || body.status === 429));
+  if (!is429 && !/limit|quota/i.test(msg)) return false;
+  if (/minute/i.test(msg)) return "minute";
+  if (/day|daily/i.test(msg)) return "day";
+  const cap = DAILY_CAP[srcId];
+  if (!cap) return "minute";                    // no daily cap exists to have hit
+  return (usageToday().counts[srcId] || 0) < 0.8 * cap ? "minute" : "day";
 }
 
 /* Data sources, tried in order until one answers. api.binance.com refuses US
@@ -548,8 +579,12 @@ const SOURCES = [
     hasKey: () => !!(getAKey() && getASec()),
     keyHint: "needs both Alpaca keys — key ID and secret (paste them in the header)",
     sym: s => s.toUpperCase().trim(),
+    // without an explicit start Alpaca defaults to TODAY, so a 500-bar request
+    // comes back with this morning only. 6× the bar span covers the ~27%
+    // regular-hours duty cycle plus weekends.
     rest: (s,p,n) => `https://data.alpaca.markets/v2/stocks/${encodeURIComponent(s)}/bars` +
-      `?timeframe=${encodeURIComponent(p)}&limit=${Math.min(10000,n)}&feed=iex&sort=desc`,
+      `?timeframe=${encodeURIComponent(p)}&limit=${Math.min(10000,n)}&feed=iex&sort=desc` +
+      `&start=${encodeURIComponent(new Date(Date.now() - Math.min(370, Math.ceil(n * (TF_MS[S.tf] || 300e3) * 6 / 864e5)) * 864e5).toISOString())}`,
     headers: () => ({ "APCA-API-KEY-ID": getAKey(), "APCA-API-SECRET-KEY": getASec() }),
     // {bars:[{t:ISO,o,h,l,c,v},...]} newest first with sort=desc
     parse: j => {
@@ -606,7 +641,7 @@ function binanceKlines(rows){
    zone (not a fixed -5) so EST/EDT switches happen on their own; the label
    below says which is in force. Bar timestamps stay epoch ms internally. */
 const ET_TZ = "America/New_York";
-const etFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, hour12:false,
+const etFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, hour12:false, weekday:"short",
   year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit" });
 const etZoneFmt = new Intl.DateTimeFormat("en-US", { timeZone:ET_TZ, timeZoneName:"short" });
 const _etPartsCache = new Map();   // bar timestamps are stable, so this is a pure win
@@ -625,6 +660,18 @@ function etHM(ms){ const p = etParts(ms); return p ? `${p.hour}:${p.minute}` : "
 function etHMS(ms){ const p = etParts(ms); return p ? `${p.hour}:${p.minute}:${p.second}` : "—"; }
 function etStamp(ms){ const p = etParts(ms); return p ? `${+p.month}/${+p.day} ${p.hour}:${p.minute}` : "—"; }
 function etDayKey(ms){ const p = etParts(ms); return p ? p.year + p.month + p.day : "invalid"; }
+/* Regular US equity hours, 9:30-16:00 ET Mon-Fri. Holidays are not modeled,
+   so a holiday reads as "open but no data" — the delayed-feed warning, which
+   is the safe direction to be wrong in. Crypto feeds never consult this. */
+function usMarketOpen(ms){
+  const p = etParts(ms == null ? Date.now() : ms);
+  if (!p || !p.weekday) return true;
+  if (p.weekday === "Sat" || p.weekday === "Sun") return false;
+  const m = (+p.hour)*60 + (+p.minute);
+  return m >= 570 && m < 960;
+}
+function sessionedFeed(){ return !!(S.source && S.source.needsKey); }
+
 function etZone(ms){
   if (ms == null || !isFinite(ms)) ms = Date.now();
   const x = etZoneFmt.formatToParts(new Date(ms)).find(y => y.type === "timeZoneName");
@@ -732,8 +779,30 @@ function computeIndicators(cs){
     vwap[i] = vv ? pv/vv : close[i];
   }
 
-  // relative volume
-  const vAvg = sma(vol, 20);
+  // relative volume against a TIME-OF-DAY baseline. Intraday volume is a U:
+  // a flat 20-bar average calls every open "confirmed" and every lunch bar
+  // "unconfirmed" purely because of the clock. Compare each bar to the average
+  // of the SAME slot on prior days (causal: only days already completed),
+  // falling back to the flat average until 3 prior-day samples exist.
+  const vAvgFlat = sma(vol, 20);
+  const vAvgTod = new Array(N).fill(NaN);
+  {
+    const sums = new Map();                    // slot -> {s, n} from completed days
+    let day = null, dayBuf = [];
+    for (let i = 0; i < N; i++){
+      const d = etDayKey(cs[i].t);
+      if (d !== day){
+        for (const [sl, v] of dayBuf){ const e = sums.get(sl) || { s:0, n:0 }; e.s += v; e.n++; sums.set(sl, e); }
+        dayBuf = []; day = d;
+      }
+      const pt = etParts(cs[i].t);
+      const sl = pt ? (+pt.hour)*60 + (+pt.minute) : -1;
+      const e = sums.get(sl);
+      if (e && e.n >= 3) vAvgTod[i] = e.s / e.n;
+      dayBuf.push([sl, vol[i]]);
+    }
+  }
+  const vAvg = vAvgFlat.map((v,i)=> isNaN(vAvgTod[i]) ? v : vAvgTod[i]);
   const rvol = vol.map((v,i)=> vAvg[i] ? v/vAvg[i] : NaN);
 
   // average bar range (for expansion check)
@@ -910,22 +979,28 @@ function fireAlert(type, barIdx, dir, text){
     S.btCollect.push({ type: type.split(":")[0], dir, i: barIdx });
     return;
   }
-  const log = $("alertlog");
-  const empty = log.querySelector(".empty"); if (empty) empty.remove();
-  const el = document.createElement("div");
-  el.className = "alert-item";
-  const now = new Date();
-  el.innerHTML = `<span class="tag ${dir==="up"?"up":dir==="down"?"down":"info"}">${dir}</span>` +
-    `<time>${etHM(now.getTime())}</time>` +
-    `<div>${esc(S.symbol)} ${S.tf} — ${text}</div>`;
-  log.prepend(el);
-  while (log.children.length > 60) log.lastChild.remove();
+  S.alerts.unshift({ w: Date.now(), dir, sym: S.symbol, tf: S.tf, text });
+  if (S.alerts.length > 60) S.alerts.length = 60;
+  renderAlerts();
   const alertsPane = document.querySelector('.tabpane[data-pane="alerts"]');
   if (alertsPane && alertsPane.hidden) $("tab-dot").classList.add("on");
   if ($("opt-sound").checked) beep(dir);
   if ("Notification" in window && Notification.permission === "granted"){
     try { new Notification(`${S.symbol} ${S.tf}`, { body: text, silent: true }); } catch(e){}
   }
+}
+
+/* The log is state, not DOM: nothing else (Diagnose included) can destroy the
+   day's signal history by writing into the panel. */
+function renderAlerts(){
+  const log = $("alertlog"); if (!log) return;
+  if (!S.alerts.length){
+    log.innerHTML = '<div class="empty">No signals yet. Alerts only fire when a bar closes with the setup confirmed — that\'s the point: you don\'t have to watch.</div>';
+    return;
+  }
+  log.innerHTML = S.alerts.map(a =>
+    `<div class="alert-item"><span class="tag ${a.dir==="up"?"up":a.dir==="down"?"down":"info"}">${esc(a.dir)}</span>` +
+    `<time>${etHM(a.w)}</time><div>${esc(a.sym)} ${a.tf} — ${a.text}</div></div>`).join("");
 }
 
 let audioCtx = null;
@@ -981,22 +1056,27 @@ async function loadHistory(gen){
                               { cache:"no-store", headers: src.headers ? src.headers() : {} });
       if (gen !== undefined && gen !== S.loadGen) throw new Error("superseded");
       let body = null; try { body = await res.json(); } catch(e){}
-      if (isQuotaError(res.status, body)){
+      const qk = quotaKind(res.status, body, src.id);
+      if (qk === "day"){
         S.quotaOut = src.id;
         tried.push(`${src.label}: daily free limit reached${DAILY_CAP[src.id] ? ` (${DAILY_CAP[src.id]} calls)` : ""} — pick another source`);
         continue;
       }
+      if (qk === "minute"){ tried.push(`${src.label}: per-minute rate limit — wait ~1 minute and retry`); continue; }
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
       cs = cs.filter(b => isFinite(b.t) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c));
       if (plan.factor > 1){ cs = resampleTf(cs, TF_MS[S.tf]); if (cs.length > 1) cs = cs.slice(1); }
       if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough ${S.tf} data for ${sym}`); continue; }
       S.candles = cs;
-      S.candles[S.candles.length-1].closed = false;
+      // Friday's 15:55 bar is finished; only a bar the clock is still inside
+      // (or just past) is genuinely forming
+      const lb = S.candles[S.candles.length-1];
+      if (Date.now() - lb.t < 2*TF_MS[S.tf]) lb.closed = false;
       S.source = src;
       S.resolvedSym = sym;
       S.plan = plan;
-      S.lastDataAt = Date.now();
+      S.lastDataAt = Date.now(); S.lastNewData = Date.now();
       return;
     }catch(e){
       const blocked = e.name === "TypeError";
@@ -1013,7 +1093,7 @@ function connectWS(){
   disconnectWS();
   const src = S.source; if (!src) return;
   if (src.poll || (S.plan && S.plan.factor > 1)){
-    setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf}${getFhKey() ? "" : " — add a free finnhub.io key for tick-by-tick"}${usageNote(src.id)}${thinVolume() ? " · volume is IEX-only" : ""}`, "live");
+    setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf}${getFhKey() ? "" : ` — refreshes ~${Math.round(pollBase()/1000)}s (free tick key = real-time)`}${usageNote(src.id)}${thinVolume() ? " · volume is IEX-only" : ""}`, "live");
     S.pollIdle = 0;
     schedulePoll();
     return;
@@ -1043,6 +1123,7 @@ function binanceAttach(ws, sym, tf){
   ws.onmessage = ev => {
     const k = JSON.parse(ev.data).k; if (!k) return;
     const bar = { t:k.t, o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+k.v, closed:k.x };
+    S.lastDataAt = Date.now(); S.lastNewData = Date.now();
     const cs = S.candles, last = cs[cs.length-1];
     if (last && last.t === bar.t) cs[cs.length-1] = bar;
     else { if (last) last.closed = true; cs.push(bar); if (cs.length > 600) cs.shift(); }
@@ -1063,6 +1144,7 @@ function coinbaseAttach(ws, sym, tf){
     const px = +m.price, size = +(m.last_size || 0);
     const stamp = m.time ? Date.parse(m.time) : Date.now();
     if (!isFinite(px) || !isFinite(stamp)) return;
+    S.lastDataAt = Date.now(); S.lastNewData = Date.now();
     const cs = S.candles, last = cs[cs.length-1];
     if (!last){
       cs.push({ t:Math.floor(stamp/ms)*ms, o:px, h:px, l:px, c:px, v:size, closed:false });
@@ -1102,6 +1184,17 @@ function disconnectWS(){
      · nothing changing  — back off toward 5 minutes (nights, weekends, halts)
    Anything new resets the backoff, so an active market still feels immediate. */
 const POLL_BASE = 12e3, POLL_MAX = 300e3;
+/* The base cadence must fit the provider's budget: 12s polling is 300/hour,
+   which spends Twelve Data's entire 800/day before 2pm even with the market
+   open. For daily-capped sources without a tick stream, pace by timeframe
+   (a sixth of a bar, 20s-150s) so a full 6.5h session plus loads fits the
+   budget with headroom. Uncapped sources and tick-covered charts keep the
+   sharper cadences. */
+function pollBase(){
+  const capped = S.source && DAILY_CAP[S.source.id];
+  if (!capped) return POLL_BASE;
+  return Math.min(150e3, Math.max(20e3, TF_MS[S.tf] / 6));
+}
 function nextPollDelay(){
   const mult = Math.pow(2, Math.min(S.pollIdle, 5));
   if (S.tickLive){
@@ -1109,7 +1202,7 @@ function nextPollDelay(){
     const untilClose = nb ? nb + 4000 - Date.now() : POLL_BASE * mult;
     return Math.min(POLL_MAX, Math.max(20e3, untilClose));
   }
-  return Math.min(POLL_MAX, POLL_BASE * mult);
+  return Math.min(POLL_MAX, pollBase() * mult);
 }
 function schedulePoll(){
   if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
@@ -1175,7 +1268,7 @@ function connectTicks(){
       touched = true;
     }
     if (!touched) return;
-    S.lastDataAt = Date.now();
+    S.lastDataAt = Date.now(); S.lastNewData = Date.now();
     if (!S.tickLive){ S.tickLive = true; setStatus(`LIVE ticks · ${S.symbol} ${S.tf} — streaming every trade`, "live"); }
     const now = performance.now();
     if (now - S.lastDraw > 200){ S.lastDraw = now; refresh(false); }
@@ -1196,14 +1289,18 @@ function disconnectTicks(){
 async function pollOnce(){
   const src = S.source;
   if (!src || !(src.poll || (S.plan && S.plan.factor > 1))) return "idle";
-  try{
+  const gen = S.loadGen;    // a poll that outlives a symbol/timeframe switch
+  try{                      // must never merge the OLD symbol's bars into the new chart
     const plan = S.plan || { param:S.tf, factor:1 };
     countRequest(src.id);
     const res = await fetch(src.rest(S.resolvedSym, plan.param, Math.max(6, plan.factor * 6)),
                             { cache:"no-store", headers: src.headers ? src.headers() : {} });
     let body = null;
     try { body = await res.json(); } catch(e){}
-    if (isQuotaError(res.status, body)) return outOfQuota(src);
+    if (gen !== S.loadGen) return "idle";
+    const qk = quotaKind(res.status, body, src.id);
+    if (qk === "day") return outOfQuota(src);
+    if (qk === "minute"){ S.pollIdle = Math.max(S.pollIdle, 3); return "error"; }  // ≥96s pause, quota intact
     if (!res.ok) return "error";                // transient — keep the last good chart
     let fresh = src.parse(body);
     if (plan.factor > 1) fresh = resampleTf(fresh, TF_MS[S.tf]);
@@ -1213,7 +1310,6 @@ async function pollOnce(){
     // a sleep/stall longer than the fetch window would splice bars across a
     // hole and corrupt every windowed indicator — resync history instead
     if (cs.length && fresh[0].t > cs[cs.length-1].t + TF_MS[S.tf]){
-      const gen = S.loadGen;
       await loadHistory(gen);
       if (gen === S.loadGen) refresh(false);
       return "new";
@@ -1236,13 +1332,18 @@ async function pollOnce(){
       else { last.closed = true; closedAny = true; cs.push({ ...b, closed:false }); if (cs.length > 600) cs.shift(); }
     }
     S.lastDataAt = Date.now();
-    refresh(closedAny);
     const last = cs[cs.length-1];
     const moved = last.t !== prevLastT || last.c !== prevLastC;
+    if (moved) S.lastNewData = Date.now();
+    refresh(closedAny);
     const age = Date.now() - last.t;
     if (S.tickLive) return moved ? "new" : "idle";        // stream status wins
     if (age > 3*TF_MS[S.tf] + 60e3){
-      setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(last.t)} ${etZone()} (market closed, or the feed is delayed)${usageNote(src.id)}`);
+      // same symptom, two different truths — say which one it is
+      if (sessionedFeed() && !usMarketOpen())
+        setStatus(`${src.label} · ${S.resolvedSym} ${S.tf} — market closed · last bar ${etHM(last.t)} ${etZone()}${usageNote(src.id)}`);
+      else
+        setStatus(`⚠ ${src.label} · ${S.resolvedSym} ${S.tf} — no new bars since ${etHM(last.t)} ${etZone()} DURING MARKET HOURS: the feed is stale or delayed. Hit Diagnose to compare sources.${usageNote(src.id)}`, "err");
     } else {
       setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(last.c)} · updated ${etHMS(Date.now())} ${etZone()}${usageNote(src.id)}`, "live");
     }
@@ -1257,9 +1358,12 @@ function outOfQuota(src){
   if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
   const cap = DAILY_CAP[src.id];
   setStatus(`${src.label} daily free limit reached${cap ? ` (${cap} calls)` : ""} — the chart above is the last good data. `
-    + `Pick another source in the dropdown, or come back after midnight UTC.`, "err");
+    + `Pick another source in the dropdown, or CLICK THIS MESSAGE to retry now.`, "err");
   return "quota";
 }
+// the one escape hatch from a quota stop that doesn't require knowing the app
+statusEl.addEventListener("click", () => { if (S.quotaOut) start(); });
+statusEl.style.cursor = "pointer";
 
 
 /* ============================== chart ============================== */
@@ -1285,6 +1389,18 @@ function refresh(barClosed){
   updateLevels();
   if (barClosed) evaluateAlerts();
   draw();
+  // "Read current bar" means CURRENT: while following, the panel re-reads the
+  // newest bar as data arrives instead of freezing on a snapshot (≤1/s)
+  if (S.followLive && S.candles.length){
+    const now = performance.now();
+    if (now - (S.lastReadRender || 0) > 900){
+      S.lastReadRender = now;
+      const i = S.candles.length - 1;
+      S.selT = S.candles[i].t;
+      const pane = document.querySelector('.tabpane[data-pane="read"]');
+      if (pane && !pane.hidden) renderRead(i);
+    }
+  }
 }
 
 /* The projection cone: the empirical distribution of "where was price h bars
@@ -1302,7 +1418,56 @@ function updateLiveState(){
   S.liveKey = key; S.liveLen = cs.length;
   S.liveRead = readState(li);
   S.liveReadT = cs[li].t;
+  if (S.liveRead){
+    const sig = S.liveRead.state + "|" + S.liveRead.dir;
+    const prev = S.stateHist[S.stateHist.length - 1];
+    if (!prev || prev.sig !== sig){
+      S.stateHist.push({ t: cs[li].t, state: S.liveRead.state, dir: S.liveRead.dir,
+                         confirmed: S.liveRead.confirmed, sig });
+      if (S.stateHist.length > 60) S.stateHist.shift();
+      renderStateHist();
+    }
+  }
   renderVerdictBar();
+}
+
+/* The trail of state changes — the answer to "what happened while I wasn't
+   staring at it", which is the reason this tool exists. Each chip is the bar
+   where the state flipped; clicking one jumps the Read panel there. */
+function renderStateHist(){
+  const el = $("vb-hist"); if (!el) return;
+  const h = S.stateHist.slice(-9);
+  if (h.length < 2){ el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const lbl = x => x.state === "moving"
+    ? (x.dir > 0 ? "▲ move" : "▼ move") + (x.confirmed ? "" : "?")
+    : x.state === "wall" ? "wall" : x.state === "coiling" ? "coil"
+    : x.state === "chop" ? "chop" : "quiet";
+  el.innerHTML = '<span style="flex:none">path:</span>' + h.map(x =>
+    `<button class="histchip ${x.state === "moving" ? (x.dir > 0 ? "up" : "down") : ""}" data-t="${x.t}">` +
+    `${etHM(x.t)} ${lbl(x)}</button>`).join('<span class="histarrow">›</span>');
+  el.querySelectorAll(".histchip").forEach(b => b.onclick = () => {
+    const i = S.candles.findIndex(c => c.t === +b.dataset.t);
+    if (i >= 0) selectBar(i);
+  });
+}
+
+/* Rebuild the trail from recent history on load, so opening the app at 11am
+   still answers "what has today looked like". Causal: each bar is read with
+   only the bars before it (readState recomputes historical levels). */
+function seedStateHist(){
+  const cs = S.candles;
+  S.stateHist = [];
+  if (!cs.length){ renderStateHist(); return; }
+  let li = cs.length - 1; if (!cs[li].closed && li > 0) li--;
+  for (let i = Math.max(46, li - 78); i <= li; i++){
+    const st = readState(i); if (!st) continue;
+    const sig = st.state + "|" + st.dir;
+    const prev = S.stateHist[S.stateHist.length - 1];
+    if (!prev || prev.sig !== sig)
+      S.stateHist.push({ t: cs[i].t, state: st.state, dir: st.dir, confirmed: st.confirmed, sig });
+  }
+  renderStateHist();
 }
 
 function draw(){
@@ -1621,17 +1786,20 @@ async function start(){
   S.quotaOut = null; S.pollIdle = 0;
   S.levels = null; S.levelsKey = null;
   S.liveRead = null; S.liveReadT = null; S.liveKey = null; renderVerdictBar();
+  S.stateHist = []; S.followLive = false; renderStateHist();
   const ro = $("readout");
   if (ro) ro.innerHTML = '<div class="empty">Click any bar on the chart and this panel names what it was doing — moving, coiling, chopping, or stalled at a tested level — with the $ levels that matter. <b>Then use ← and → to step bar by bar</b> (hold Shift for ten). On a past bar it also shows what actually happened next.</div>';
   try{
     await loadHistory(gen);
     if (gen !== S.loadGen) return;
     refresh(false);
+    seedStateHist();
     connectWS();
     connectTicks();
   }catch(e){
     if (gen !== S.loadGen) return;
     setStatus("No feed — " + e.message, "err");
+    $("datarow").hidden = false;             // the fix usually lives in here
     S.candles = []; draw();
   }
 }
@@ -1658,11 +1826,30 @@ async function probeSource(src){
   const url = src.rest(sym, plan.param, 10);
   const host = host0;
   try{
+    countRequest(src.id);
     const res = await fetch(url, { cache:"no-store", headers: src.headers ? src.headers() : {} });
     let body = null; try { body = await res.clone().json(); } catch(e){}
-    if (isQuotaError(res.status, body))
+    const qk = quotaKind(res.status, body, src.id);
+    if (qk === "minute")
+      return { host, ok:false, verdict:"per-minute rate limit hit — the source is fine, wait ~1 minute" };
+    if (qk === "day")
       return { host, ok:false, verdict:`daily free limit reached${DAILY_CAP[src.id] ? ` (${DAILY_CAP[src.id]} calls)` : ""} — use another source until it resets` };
-    if (res.ok) return { host, ok:true, verdict:`reachable — HTTP ${res.status}, data OK${usageNote(src.id)}` };
+    if (res.ok){
+      // the question the user is actually asking: how FRESH is this source?
+      let newest = null;
+      try { const bars = src.parse(body); if (bars.length) newest = bars[bars.length-1].t; } catch(e){}
+      if (newest == null)
+        return { host, ok:true, verdict:`reachable, but returned no parseable ${S.tf} bars for "${esc(sym)}"${usageNote(src.id)}` };
+      const ageMin = Math.round((Date.now() - newest)/60000);
+      const ageTxt = ageMin < 60 ? `${ageMin}m ago` : `${(ageMin/60).toFixed(1)}h ago`;
+      const open = !src.needsKey || usMarketOpen();
+      const staleWarn = open && (Date.now() - newest) > 2*TF_MS[S.tf] + 90e3;
+      return { host, ok:true, fresh: !staleWarn, newest,
+        verdict:`newest ${S.tf} bar ${etStamp(newest)} ${etZone(newest)} (${ageTxt})` +
+          (staleWarn ? " — ⚠ STALE for a live market: this source is serving delayed data right now"
+                     : open ? " — fresh" : " — market closed, that's the final bar") +
+          usageNote(src.id) };
+    }
     return { host, ok:false, verdict:`HTTP ${res.status}` +
       (res.status === 451 ? " — geo-blocked (this exchange refuses your country)" :
        res.status === 401 || res.status === 403 ? " — the key was rejected (wrong key, or the wrong half of an Alpaca pair)" :
@@ -1680,28 +1867,39 @@ async function probeSource(src){
 }
 
 $("diag").onclick = async () => {
-  const log = $("alertlog");
-  log.innerHTML = '<div class="empty">Probing each exchange…</div>';
+  const out = $("diagout");
+  out.hidden = false;
+  showTab("alerts");
+  out.innerHTML = '<div class="empty">Checking each source\'s freshness…</div>';
   const results = await Promise.all(SOURCES.map(probeSource));
-  const anyReachable = results.some(r => r.verdict.startsWith("host IS reachable"));
-  const allDead = results.every(r => r.verdict.startsWith("no connection"));
-  log.innerHTML = "";
-  results.forEach(r => {
-    const el = document.createElement("div");
-    el.className = "alert-item";
-    el.innerHTML = `<span class="tag ${r.ok ? "up" : "down"}">${r.ok ? "ok" : "fail"}</span>` +
-      `<div><b>${r.host}</b></div><div style="color:var(--muted);font-size:12px">${r.verdict}</div>`;
-    log.appendChild(el);
-  });
-  const tip = document.createElement("div");
-  tip.className = "empty";
-  tip.style.textAlign = "left";
-  tip.innerHTML = allDead
-    ? "Every host is unreachable at the network level. Most likely a VPN, a corporate/school network, or an ISP-level block on exchange domains. Try turning off a VPN, or open this page on your phone's cellular connection to confirm."
-    : anyReachable
-    ? "At least one host answered, so your network is fine — something in the browser is dropping the response. Disable ad/privacy blockers for this page (or Brave Shields) and reload."
-    : "Hosts answered with errors rather than being blocked — read the codes above; 451 means that exchange refuses your country, so pick a different one in the source dropdown.";
-  log.appendChild(tip);
+  const active = S.source ? results[SOURCES.indexOf(S.source)] : null;
+  const rows = results.map((r, k) => {
+    const isActive = S.source === SOURCES[k];
+    const tag = r.ok ? (r.fresh === false ? "info" : "up") : "down";
+    return `<div class="alert-item${isActive ? '" style="outline:1px solid var(--accent);border-radius:6px' : ''}">` +
+      `<span class="tag ${tag}">${r.ok ? (r.fresh === false ? "stale" : "ok") : "fail"}</span>` +
+      `<div><b>${esc(r.host)}</b>${isActive ? " · <b>active</b>" : ""}</div>` +
+      `<div style="color:var(--muted);font-size:12px">${r.verdict}</div></div>`;
+  }).join("");
+  // the tip answers for the source that matters — the one feeding the chart —
+  // and never blames the user's ad blocker for a geo-blocked crypto host
+  let tip;
+  if (active && active.ok && active.fresh !== false)
+    tip = "Your active source is fresh — the chart is as current as this feed gets. If it still looks behind TradingView, add a free finnhub.io tick key for trade-by-trade updates.";
+  else if (active && active.ok && active.fresh === false)
+    tip = "Your active source answered but its data is STALE — the provider is delaying you. Pick a source above whose newest bar is fresh, or reload to re-probe.";
+  else if (active)
+    tip = "Your active source is failing — that's why the chart is behind. Pick a working source in the dropdown, or reload to let the app choose again.";
+  else
+    tip = "No source is feeding the chart yet. The rows above show what each one said.";
+  const better = results.some((r, k) => r.ok && r.fresh !== false && S.source !== SOURCES[k]);
+  out.innerHTML = `<h2>Feed check — ${etHMS(Date.now())} ${etZone()}</h2>` + rows +
+    `<div class="empty" style="text-align:left">${tip}</div>` +
+    `<div style="display:flex;gap:8px;margin:6px 0 10px">` +
+    `<button id="diag-reload">Reload chart now${better && (!active || !active.ok || active.fresh === false) ? " (a fresher source is available)" : ""}</button>` +
+    `<button id="diag-close">Close</button></div>`;
+  $("diag-reload").onclick = () => { out.hidden = true; start(); };
+  $("diag-close").onclick = () => { out.hidden = true; };
 };
 $("source").onchange = e => { S.forceSource = e.target.value; start(); };
 ["opt-fvg"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", () => draw()); });
@@ -1719,6 +1917,7 @@ $("tdkey").addEventListener("change", e => {
 });
 $("akey").value = getAKey();
 $("asec").value = getASec();
+$("datarow").hidden = !!(getTdKey() || (getAKey() && getASec()));
 $("akey").addEventListener("change", e => { setAKey(e.target.value.trim()); writeKeyHash(); start(); });
 $("asec").addEventListener("change", e => { setASec(e.target.value.trim()); writeKeyHash(); start(); });
 $("notifbtn").onclick = async () => {
@@ -1764,13 +1963,34 @@ function readState(i){
   const rvol = ind.rvol[i];
   const aboveVwap = c.c > ind.vwap[i];
 
-  // the tape: net drift of the last 6 closes
-  const back = Math.min(6, i);
-  const net6 = c.c - cs[i-back].c;
-  const tapeDir = (atr > 0 && Math.abs(net6) >= 0.7*atr) ? (net6 > 0 ? 1 : -1) : 0;
+  // the tape: net drift of the last 6 closes — CLAMPED to the current session
+  // on stock feeds. Reaching across the overnight gap turned every open into
+  // "MOVING (confirmed)" off the gap itself, a green light to chase at 9:30.
+  let back = Math.min(6, i);
+  if (sessionedFeed()){
+    const d = etDayKey(c.t);
+    let j = i - back;
+    while (j < i && etDayKey(cs[j].t) !== d) j++;
+    back = i - j;
+  }
+  const net6 = back > 0 ? c.c - cs[i-back].c : 0;
+  const freshSession = sessionedFeed() && back < 2;   // opening bar(s): tape unreadable
+  const tapeDir = (!freshSession && back >= 2 && atr > 0 && Math.abs(net6) >= 0.7*atr) ? (net6 > 0 ? 1 : -1) : 0;
 
-  // nearest tested levels, with failed-attempt episodes over the last 60 bars
-  const lvls = S.levels && S.levelsKey === S.symbol + "|" + S.tf ? S.levels : findLevels(cs, i, ind);
+  // nearest tested levels, with failed-attempt episodes over the last 60 bars.
+  // The cache is only valid at the LIVE edge: it was built on the full history,
+  // so using it for a past bar would grade practice reads against walls that
+  // formed later — lookahead. Historical reads recompute causally (memoized so
+  // arrow-key stepping stays cheap), with the same top-6 rule as updateLevels.
+  let lastClosed = cs.length - 1; if (!cs[lastClosed].closed && lastClosed > 0) lastClosed--;
+  let lvls;
+  if (S.levels && S.levelsKey === S.symbol + "|" + S.tf && i >= lastClosed) lvls = S.levels;
+  else {
+    const mk = S.symbol + "|" + S.tf + "|" + i + "|" + cs.length;
+    if (S.histLvlKey === mk) lvls = S.histLvl;
+    else { lvls = findLevels(cs, i, ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
+           S.histLvlKey = mk; S.histLvl = lvls; }
+  }
   let res = null, sup = null;
   for (const L of lvls){
     if (L.price > c.c && (!res || L.price < res.price)) res = L;
@@ -1792,18 +2012,29 @@ function readState(i){
   // volume profile levels (only meaningful when the feed reports volume)
   let hasVol = false;
   for (let j = Math.max(0, i-20); j <= i; j++) if (cs[j].v > 0){ hasVol = true; break; }
-  const vpSpan = S.view ? Math.max(60, S.view.i1 - S.view.i0) : 150;
+  const vpSpan = 150;   // fixed — the same bar must read the same at any zoom
   const vp = hasVol ? volumeProfile(cs, Math.max(0, i - vpSpan), i, 40) : null;
   const lvl = vp ? { poc: vp.lo + (vp.poc+0.5)*vp.bh, vah: vp.lo + (vp.vaHi+1)*vp.bh, val: vp.lo + vp.vaLo*vp.bh } : null;
 
-  // barcode: small box AND no net progress through it
+  // barcode: small box AND no net progress through it (never across a gap)
   let stalled = null;
-  if (i >= 6 && atr > 0){
+  if (i >= 6 && atr > 0 && (!sessionedFeed() || back >= 5)){
     let hh = -Infinity, ll = Infinity;
     for (let k = i-5; k <= i; k++){ hh = Math.max(hh, cs[k].h); ll = Math.min(ll, cs[k].l); }
     const box = hh - ll, eff = box > 0 ? Math.abs(net6)/box : 0;
     if (box < 1.5*atr && eff < 0.4 && tapeDir === 0) stalled = { top: hh, bot: ll };
   }
+
+  // thresholds are cliffs; say when a read sits right on one instead of
+  // flickering between labels with false confidence
+  const edgeNotes = [];
+  if (!freshSession && back >= 2 && atr > 0){
+    const r = Math.abs(net6) / (0.7*atr);
+    if (r >= 0.85 && r <= 1.15)
+      edgeNotes.push(`tape is borderline: ${(Math.abs(net6)/atr).toFixed(2)} ATR vs the 0.70 line`);
+  }
+  if (isFinite(rvol) && Math.abs(rvol - thr) <= 0.15)
+    edgeNotes.push(`RVOL ${rvol.toFixed(2)} sits on the ${thr.toFixed(1)} confirmation gate`);
 
   // resolve the one state, most specific first
   let state, dir = 0, wall = null, detail;
@@ -1824,12 +2055,15 @@ function readState(i){
     state = "moving"; dir = tapeDir;
     const confirmed = isFinite(rvol) && rvol >= thr;
     detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) : "?"} ATR) over the last ${back} bars on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm; unbacked moves are the fakeouts that trap you"}.`;
-    return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl };
+    return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i] };
+  } else if (freshSession){
+    state = "quiet";
+    detail = `Session just opened — only ${back + 1} bar${back ? "s" : ""} so far, the tape is not readable yet. The overnight gap is not momentum. ${rvTxt}.`;
   } else {
     state = "quiet";
     detail = `Nothing happening: no thrust, no compression, no level under pressure. ${rvTxt}. This is the tape that eats premium — the alerts are watching so you don't have to.`;
   }
-  return { i, c, atr, state, dir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl };
+  return { i, c, atr, state, dir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i] };
 }
 
 const STATE_LABEL = {
@@ -1859,6 +2093,8 @@ function renderVerdictBar(){
   if (a.keyLevels.res) bits.push(chip(`ceiling $${fmtPx(a.keyLevels.res.price)} ×${a.keyLevels.res.touches}`));
   if (a.keyLevels.sup) bits.push(chip(`floor $${fmtPx(a.keyLevels.sup.price)} ×${a.keyLevels.sup.touches}`));
   bits.push(chip(a.aboveVwap ? "above VWAP" : "below VWAP"));
+  if (isFinite(a.stoch)) bits.push(chip(`Stoch RSI ${Math.round(a.stoch)}${a.stoch >= 80 ? " — stretched" : a.stoch <= 20 ? " — washed out" : ""}`));
+  if (a.edgeNotes && a.edgeNotes.length) bits.push(chip("≈ borderline", "con"));
   $("vb-chips").innerHTML = bits.join("");
   $("vb-when").textContent = `as of the ${etHM(S.liveReadT)} close — click for detail`;
 }
@@ -1876,6 +2112,7 @@ function selectBar(i){
   const cs = S.candles;
   if (!cs.length) return;
   i = Math.max(0, Math.min(cs.length - 1, i));
+  S.followLive = i === cs.length - 1;   // selecting the newest bar means "follow it"
   S.selT = cs[i].t;
   draw(); renderRead(i); showTab("read");
 }
@@ -1892,7 +2129,7 @@ function renderRead(i){
   const forming = !cs[i].closed;
   const nbc = forming ? nextBarClose() : null;
   const formingHtml = forming
-    ? `<div class="forming">⏳ <b>This bar is still forming</b>${nbc ? ` — closes in ${mmss(nbc - Date.now())}` : ""}. The read can change until the close; alerts wait for it.</div>`
+    ? `<div class="forming">⏳ <b>This bar is still forming</b>${nbc ? ` — closes in ${mmss(nbc - Date.now())}` : ""}. The read can change until the close; alerts wait for it.${S.followLive ? " <b>Following live</b> — this panel updates as data arrives." : ""}</div>`
     : "";
 
   // the levels that matter, in dollars — the concrete part of any read
@@ -1926,6 +2163,8 @@ function renderRead(i){
       <div class="fline hint">A read of the ${a.i + 1} bars ending here — tape, session VWAP, compression, tested levels, volume. A description of NOW, not a forecast: the backtest showed forecasts here were coin flips, so this tool no longer makes them.</div>
       ${formingHtml}
       <div class="fline">${a.detail}</div>
+      ${isFinite(a.stoch) ? `<div class="fline hint">Stoch RSI ${Math.round(a.stoch)}${a.stoch >= 80 ? " (stretched — continuation needs real volume)" : a.stoch <= 20 ? " (washed out — bounces start here, on volume)" : ""} · ${a.aboveVwap ? "above" : "below"} session VWAP. Context, not a signal — the backtest measured these as coin flips on their own.</div>` : ""}
+      ${a.edgeNotes && a.edgeNotes.length ? `<div class="fline hint">≈ ${a.edgeNotes.join(" · ")} — a read this close to its threshold can flip on the next bar.</div>` : ""}
       <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
     </div>
     ${lvlHtml}
@@ -1971,18 +2210,12 @@ $("readnow").onclick = () => {
    the window — the same zoom the wheel drives — rather than selecting a bar
    that isn't on screen. */
 const MIN_READ_BAR = 45;   // readState() needs this much indicator warm-up
-document.addEventListener("keydown", e => {
-  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const t = e.target;
-  if (t && (/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(t.tagName) || t.isContentEditable)) return;
+function stepBar(step){
   const cs = S.candles;
   if (!cs.length || !S.view) return;
-  e.preventDefault();
   // no selection yet (or it died with a symbol/timeframe change): anchor live
   let cur = S.selT != null ? cs.findIndex(b => b.t === S.selT) : -1;
   if (cur < 0){ selectBar(cs.length - 1); return; }
-  const step = (e.shiftKey ? 10 : 1) * (e.key === "ArrowRight" ? 1 : -1);
   const floor = Math.max(MIN_READ_BAR, cs.length - MAX_BARS_VISIBLE);
   const next = Math.max(floor, Math.min(cs.length - 1, cur + step));
   if (next === cur) return;
@@ -1990,7 +2223,19 @@ document.addEventListener("keydown", e => {
   if (next < S.view.i0)
     S.barsVisible = Math.min(MAX_BARS_VISIBLE, cs.length - next);
   selectBar(next);
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && (/^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName) || t.isContentEditable)) return;
+  if (!S.candles.length || !S.view) return;
+  e.preventDefault();
+  stepBar((e.shiftKey ? 10 : 1) * (e.key === "ArrowRight" ? 1 : -1));
 });
+$("stepback").onclick = () => stepBar(-1);
+$("stepfwd").onclick = () => stepBar(1);
+$("databtn").onclick = () => { $("datarow").hidden = !$("datarow").hidden; };
 
 /* ============================== trade journal ============================== */
 const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered during squeeze/chop",
@@ -1998,7 +2243,42 @@ const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered dur
   "took profit too early", "thesis just wrong", "news / external"];
 
 function jLoad(){ try { return JSON.parse(localStorage.getItem("mrjournal") || "[]"); } catch(e){ return []; } }
-function jSave(t){ try { localStorage.setItem("mrjournal", JSON.stringify(t)); } catch(e){} }
+function jSave(t){
+  try { localStorage.setItem("mrjournal", JSON.stringify(t)); return true; }
+  catch(e){
+    setStatus("⚠ could not save the journal — browser storage is full or blocked. Export your journal now so nothing is lost.", "err");
+    return false;
+  }
+}
+
+/* Imported files are untrusted: rebuild every record from typed, bounded
+   fields so a crafted export can't plant HTML that renders on every load. */
+const J_STATES = ["moving","wall","coiling","chop","quiet"];
+function jCleanSnap(sn){
+  if (!sn || typeof sn !== "object") return null;
+  if ("state" in sn)
+    return { state: J_STATES.includes(sn.state) ? sn.state : "quiet",
+             sdir: sn.sdir > 0 ? 1 : sn.sdir < 0 ? -1 : 0,
+             confirmed: !!sn.confirmed,
+             rvol: +(+sn.rvol || 0).toFixed(2), aboveVwap: !!sn.aboveVwap };
+  return { squeezeOn: !!sn.squeezeOn, lean: +sn.lean || 0, rvol: +(+sn.rvol || 0).toFixed(2) };
+}
+function jCleanTrade(t){
+  const num = (v, d) => isFinite(+v) ? +v : d;
+  return {
+    id: +t.id, openedAt: String(t.openedAt).slice(0, 40),
+    symbol: String(t.symbol || "").slice(0, 16), tf: String(t.tf || "").slice(0, 4),
+    dir: t.dir === "short" ? "short" : "long", entry: +t.entry,
+    target: num(t.target, null), stop: num(t.stop, null),
+    setup: String(t.setup || "").slice(0, 80), thesis: String(t.thesis || "").slice(0, 600),
+    snap: jCleanSnap(t.snap),
+    agree: t.agree === true ? true : t.agree === false ? false : null,
+    status: t.status === "closed" ? "closed" : "open",
+    exit: num(t.exit, null), pnl: t.pnl == null ? null : num(t.pnl, null),
+    tag: t.tag == null ? null : String(t.tag).slice(0, 60),
+    notes: String(t.notes || "").slice(0, 1000),
+  };
+}
 
 $("jform").addEventListener("submit", e => {
   e.preventDefault();
@@ -2091,7 +2371,12 @@ function jRender(){
   const st = $("jstats");
   if (!closed.length){ st.innerHTML = "<h3>Your numbers</h3><div class='hint'>Stats appear once you close trades. The one to watch: win rate when you entered on a confirmed move vs. when you entered without one.</div>"; return; }
   const wins = closed.filter(t => t.pnl > 0);
-  const agreeC = closed.filter(t => t.agree === true), againstC = closed.filter(t => t.agree === false);
+  // "green light" is a state-era concept (confirmed MOVING in your direction);
+  // legacy lean-era records measured something the tool no longer believes in
+  const stateEra = t => t.snap && ("state" in t.snap);
+  const legacyN = closed.filter(t => t.agree != null && !stateEra(t)).length;
+  const agreeC = closed.filter(t => t.agree === true && stateEra(t)),
+        againstC = closed.filter(t => t.agree === false && stateEra(t));
   const wr = g => g.length ? Math.round(100 * g.filter(t => t.pnl > 0).length / g.length) + "% of " + g.length : "—";
   const avg = g => g.length ? (g.reduce((s,t) => s + t.pnl, 0) / g.length) : 0;
   const tagCounts = {};
@@ -2104,6 +2389,7 @@ function jRender(){
     <div class="srow"><span>Expectancy per trade</span><b>${avg(closed) >= 0 ? "+" : "−"}$${fmtPx(Math.abs(avg(closed)))}</b></div>
     <div class="srow"><span>Entered on a green light (confirmed move)</span><b>${wr(agreeC)}</b></div>
     <div class="srow"><span>Entered without one</span><b>${wr(againstC)}</b></div>
+    ${legacyN ? `<div class="srow"><span class="hint">(${legacyN} older trade${legacyN > 1 ? "s" : ""} from the old scoring system excluded from the green-light split)</span><b></b></div>` : ""}
     ${topTag ? `<div class="srow"><span>Most common failure</span><b>${esc(topTag[0])} ×${topTag[1]}</b></div>` : ""}`;
 }
 
@@ -2130,7 +2416,7 @@ $("jimport").onclick = e => {
       arr.forEach(t => {
         const ok = t && typeof t.id === "number" && isFinite(new Date(t.openedAt).getTime()) && isFinite(+t.entry);
         if (!ok){ dropped++; return; }
-        if (!ids.has(t.id)) cur.push(t);
+        if (!ids.has(t.id)) cur.push(jCleanTrade(t));
       });
       if (dropped) alert(dropped + " record(s) in that file were malformed and were skipped.");
       cur.sort((a,b) => b.id - a.id);
@@ -2148,7 +2434,12 @@ jRender();
 function btOutcome(cs, ind, i, dir){
   const a = ind.atr[i]; if (!a || i + 1 >= cs.length) return "none";
   const e = cs[i].c, end = Math.min(cs.length - 1, i + 20);
+  // stock outcomes stop at the session boundary: this trader is flat by the
+  // close, so an overnight gap "hitting" the bracket is a fill that never
+  // existed for them
+  const sess = sessionedFeed() ? etDayKey(cs[i].t) : null;
   for (let k = i + 1; k <= end; k++){
+    if (sess && etDayKey(cs[k].t) !== sess) return "none";
     const f = dir > 0 ? cs[k].h - e : e - cs[k].l;
     const g = dir > 0 ? e - cs[k].l : cs[k].h - e;
     if (g >= a) return "loss";                 // stop side first (or same bar) = loss
@@ -2163,6 +2454,9 @@ async function runBacktest(){
   btn.disabled = true;
   out.innerHTML = '<div class="empty">Fetching extended history…</div>';
   const gen = S.loadGen;
+  // freeze the live feed for the whole run: a poll or tick landing mid-replay
+  // would append live bars to the HISTORICAL array and corrupt test and chart
+  disconnectWS();
 
   // extended history: one call, up to 5000 bars; fall back to the loaded chart
   let bars = null, note = "";
@@ -2171,9 +2465,16 @@ async function runBacktest(){
     // Twelve Data caps outputsize at 5000 — asking for factor× that on a
     // derived timeframe (3m = 1min×3) made the API refuse and the backtest
     // silently fall back to the tiny loaded chart
-    const res = await fetch(S.source.rest(S.resolvedSym, plan.param, Math.min(5000, 5000 * plan.factor)), { cache:"no-store" });
-    if (res.ok){
-      let b = S.source.parse(await res.json());
+    countRequest(S.source.id);
+    const res = await fetch(S.source.rest(S.resolvedSym, plan.param, Math.min(5000, 5000 * plan.factor)),
+                            { cache:"no-store", headers: S.source.headers ? S.source.headers() : {} });
+    let bodyJ = null; try { bodyJ = await res.json(); } catch(e){}
+    const qk = quotaKind(res.status, bodyJ, S.source.id);
+    if (qk) note = qk === "day"
+      ? "provider daily limit reached — tested on the loaded chart only"
+      : "provider per-minute limit hit — tested on the loaded chart only; rerun in a minute for full history";
+    if (res.ok && !qk){
+      let b = S.source.parse(bodyJ);
       b = b.filter(x => isFinite(x.t) && isFinite(x.o) && isFinite(x.h) && isFinite(x.l) && isFinite(x.c));
       if (plan.factor > 1){ b = resampleTf(b, TF_MS[S.tf]); if (b.length > 1) b = b.slice(1); }
       if (b.length > S.candles.length) bars = b.map(x => ({ ...x, closed: true }));
@@ -2182,7 +2483,7 @@ async function runBacktest(){
   if (gen !== S.loadGen){ btn.disabled = false; return; }
   if (!bars){
     bars = S.candles.filter(c => c.closed).map(c => ({ ...c }));
-    note = "extended fetch unavailable — tested on the loaded chart only, treat every number as a small sample";
+    if (!note) note = "extended fetch unavailable — tested on the loaded chart only, treat every number as a small sample";
   }
 
   // swap state in, restore no matter what
@@ -2245,8 +2546,23 @@ async function runBacktest(){
     S.candles = save.cs; S.ind = save.ind; S.levels = save.levels; S.levelsKey = save.levelsKey;
     S.lastAlertT = save.lastAlertT; S.firedKeys = save.fired;
     prog.textContent = ""; btn.disabled = false;
+    if (gen === S.loadGen){ connectWS(); connectTicks(); }   // thaw the live feed
     draw();
   }
+}
+
+/* Confirmed/unconfirmed buckets mix up- and down-moves, so their fair baseline
+   is the direction-weighted blend of the two directional baselines — weighted
+   by how many of the bucket's own trades went each way. */
+function confBase(acc){
+  const nUp = acc.move.up.w + acc.move.up.l + acc.move.up.u;
+  const nDn = acc.move.dn.w + acc.move.dn.l + acc.move.dn.u;
+  const n = nUp + nDn;
+  if (!n) return acc.base.up;
+  const p = sl => { const r = sl.w + sl.l + sl.u; return r ? sl.w / r : 0; };
+  const w = (p(acc.base.up) * nUp + p(acc.base.dn) * nDn) / n;
+  const scale = 1000;
+  return { w: Math.round(w * scale), l: Math.round((1 - w) * scale), u: 0 };
 }
 
 function renderBacktest(out, acc, N, note){
@@ -2290,8 +2606,8 @@ function renderBacktest(out, acc, N, note){
         <tr><td class="dim">baseline: always guess down</td><td class="dim">${tot(baseDn)}</td><td class="dim">${pct(baseDn)}%</td><td class="dim"></td><td class="dim">0</td></tr>
         ${row("MOVING UP, traded with it", acc.move.up, baseUp)}
         ${row("MOVING DOWN, traded with it", acc.move.dn, baseDn)}
-        ${row("· volume-confirmed moves only", acc.conf.yes, blended)}
-        ${row("· unconfirmed moves", acc.conf.no, blended)}
+        ${row("· volume-confirmed moves only", acc.conf.yes, confBase(acc))}
+        ${row("· unconfirmed moves", acc.conf.no, confBase(acc))}
       </table>
       <div class="fline hint">The split that matters: confirmed vs unconfirmed. If confirmed beats unconfirmed here, the RVOL gate is earning its keep.</div>
     </div>
@@ -2333,12 +2649,25 @@ function tickClock(){
   let stale = false;
   const nb = nextBarClose();
   if (nb) bits.push(`<b class="big">${mmss(nb - Date.now())}</b> to ${S.tf} close`);
-  else if (S.candles.length){ bits.push('<span class="warn">no new bar</span>'); stale = true; }
-  if (S.lastDataAt){
-    const age = Math.round((Date.now() - S.lastDataAt)/1000);
-    const limit = S.tickLive ? 120 : 45;
-    bits.push(age > limit ? `<span class="warn">data ${age}s ago</span>` : `data ${age}s ago`);
-    if (age > limit) stale = true;
+  else if (S.candles.length && !(sessionedFeed() && !usMarketOpen())){ bits.push('<span class="warn">no new bar</span>'); stale = true; }
+  const marketShut = sessionedFeed() && !usMarketOpen();
+  if (S.lastNewData){
+    const age = Math.round((Date.now() - S.lastNewData)/1000);
+    if (marketShut){
+      bits.push("market closed");
+      stale = false;                                     // quiet is correct after hours
+    } else {
+      // "new data" means the newest bar changed — a feed replaying the same
+      // stale bars keeps lastDataAt fresh but never advances this figure
+      const limit = S.tickLive ? 60 : 120;
+      bits.push(age > limit ? `<span class="warn">no new data ${age}s</span>` : `new data ${age}s ago`);
+      if (age > limit) stale = true;
+      // a silently dead tick stream must not keep claiming "streaming":
+      // drop the flag and put the poll back on its fast cadence
+      if (S.tickLive && age > 60){
+        S.tickLive = false; S.pollIdle = 0; schedulePoll();
+      }
+    }
   } else if (S.candles.length) bits.push("waiting for first update");
   box.classList.toggle("stale", stale);
   el.innerHTML = wall + (bits.length ? " · " + bits.join(" · ") : "");
@@ -2354,6 +2683,8 @@ window.addEventListener("resize", draw);
    follows). The choice is remembered. */
 function applyTheme(t){
   document.body.classList.toggle("light", t === "light");
+  const mc = document.querySelector('meta[name="theme-color"]');
+  if (mc) mc.setAttribute("content", t === "light" ? "#f6f7f9" : "#0d1117");
   _cssCache = Object.create(null);
   $("themebtn").textContent = t === "light" ? "🌙" : "☀️";
   try { localStorage.setItem("theme", t); } catch(e){}
@@ -2374,6 +2705,9 @@ const akFromLink = location.hash.match(/(?:^|[#&])ak=([\w-]+)/);
 if (akFromLink){ setAKey(akFromLink[1]); $("akey").value = akFromLink[1]; }
 const asFromLink = location.hash.match(/(?:^|[#&])as=([\w-]+)/);
 if (asFromLink){ setASec(asFromLink[1]); $("asec").value = asFromLink[1]; }
+// a key-bearing bookmark on a fresh browser: the keys just arrived via the
+// hash, so the settings drawer no longer needs to be open
+$("datarow").hidden = !!(getTdKey() || (getAKey() && getASec()));
 if (getTdKey() || getFhKey()) writeKeyHash();
 
 start();
