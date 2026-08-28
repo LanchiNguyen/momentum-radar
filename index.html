@@ -82,6 +82,10 @@
   .histchip.up{color:var(--good); border-color:var(--good);}
   .histchip.down{color:var(--down); border-color:var(--down);}
   .histarrow{color:var(--border); flex:none;}
+  #hintbar{display:flex; gap:10px; align-items:center; justify-content:space-between;
+    padding:5px 16px; font-size:12px; color:var(--muted); background:var(--panel);
+    border-bottom:1px solid var(--border);}
+  #hintbar button{background:none; border:none; color:var(--muted); cursor:pointer; font-size:13px; padding:2px 6px;}
   #verdictbar{display:flex; align-items:center; gap:12px; padding:7px 16px; background:var(--panel);
     border-bottom:1px solid var(--border); cursor:pointer; flex-wrap:wrap; user-select:none;}
   #verdictbar:hover{filter:brightness(1.03);}
@@ -241,6 +245,7 @@
   <span class="hint" id="vb-when"></span>
 </div>
 <div id="vb-hist" hidden></div>
+<div id="hintbar" hidden><span>Click any bar for its read · ← → (or ‹ ›) step bars, Shift = 10 · scroll wheel zooms · ⚙ data holds your API keys · alerts fire on bar close so you don't have to watch</span><button id="hintx" title="got it">✕</button></div>
 
 <main>
   <div id="chartwrap">
@@ -2050,11 +2055,11 @@ function readState(i){
     detail = `Bollinger inside Keltner and the tape is quiet — volatility is compressing. Entering here pays theta to wait. The squeeze-release alert fires when it pops.`;
   } else if (stalled){
     state = "chop";
-    detail = `Barcoding: the last 6 bars fit in a $${fmtPx(stalled.top - stalled.bot)} box going nowhere. No trade until price leaves $${fmtPx(stalled.bot)}–$${fmtPx(stalled.top)} on real volume.`;
+    detail = `Barcoding: the last 6 bars (${Math.round(6*TF_MS[S.tf]/6e4)} min) fit in a $${fmtPx(stalled.top - stalled.bot)} box going nowhere. No trade until price leaves $${fmtPx(stalled.bot)}–$${fmtPx(stalled.top)} on real volume.`;
   } else if (tapeDir !== 0){
     state = "moving"; dir = tapeDir;
     const confirmed = isFinite(rvol) && rvol >= thr;
-    detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) : "?"} ATR) over the last ${back} bars on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm; unbacked moves are the fakeouts that trap you"}.`;
+    detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) : "?"} ATR) over the last ${back} bars (${Math.round(back*TF_MS[S.tf]/6e4)} min) on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm; unbacked moves are the fakeouts that trap you"}.`;
     return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i] };
   } else if (freshSession){
     state = "quiet";
@@ -2236,6 +2241,10 @@ document.addEventListener("keydown", e => {
 $("stepback").onclick = () => stepBar(-1);
 $("stepfwd").onclick = () => stepBar(1);
 $("databtn").onclick = () => { $("datarow").hidden = !$("datarow").hidden; };
+// shown until dismissed once, then never again — teaching belongs on the
+// surface, not inside a hidden tab
+try { if (!localStorage.getItem("mrhints")) $("hintbar").hidden = false; } catch(e){ $("hintbar").hidden = false; }
+$("hintx").onclick = () => { $("hintbar").hidden = true; try { localStorage.setItem("mrhints", "1"); } catch(e){} };
 
 /* ============================== trade journal ============================== */
 const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered during squeeze/chop",
@@ -2431,22 +2440,26 @@ jRender();
 /* Replays history through the live state and alert code. Causality: readState
    uses only bars <= i, ATR at i is Wilder-recursive over bars <= i, and the
    level set is recomputed as the replay advances so nothing sees future pivots. */
-function btOutcome(cs, ind, i, dir){
-  const a = ind.atr[i]; if (!a || i + 1 >= cs.length) return "none";
+/* {r, n}: the outcome AND how many bars it took — for an options trader the
+   speed is half the result, because a win that takes 19 bars has been paying
+   theta the whole way there. */
+function btOutcomeFull(cs, ind, i, dir){
+  const a = ind.atr[i]; if (!a || i + 1 >= cs.length) return { r:"none", n:null };
   const e = cs[i].c, end = Math.min(cs.length - 1, i + 20);
   // stock outcomes stop at the session boundary: this trader is flat by the
   // close, so an overnight gap "hitting" the bracket is a fill that never
   // existed for them
   const sess = sessionedFeed() ? etDayKey(cs[i].t) : null;
   for (let k = i + 1; k <= end; k++){
-    if (sess && etDayKey(cs[k].t) !== sess) return "none";
+    if (sess && etDayKey(cs[k].t) !== sess) return { r:"none", n:null };
     const f = dir > 0 ? cs[k].h - e : e - cs[k].l;
     const g = dir > 0 ? e - cs[k].l : cs[k].h - e;
-    if (g >= a) return "loss";                 // stop side first (or same bar) = loss
-    if (f >= a) return "win";
+    if (g >= a) return { r:"loss", n:k-i };    // stop side first (or same bar) = loss
+    if (f >= a) return { r:"win", n:k-i };
   }
-  return "none";
+  return { r:"none", n:null };
 }
+function btOutcome(cs, ind, i, dir){ return btOutcomeFull(cs, ind, i, dir).r; }
 
 async function runBacktest(){
   const btn = $("bt-run"), prog = $("bt-prog"), out = $("bt-out");
@@ -2500,7 +2513,10 @@ async function runBacktest(){
     conf: { yes: { w:0, l:0, u:0 }, no: { w:0, l:0, u:0 } },
     veto: {}, signals: {},
   };
-  const tally = (slot, o) => { if (o === "win") slot.w++; else if (o === "loss") slot.l++; else slot.u++; };
+  const tally = (slot, o) => {
+    if (o.r === "win"){ slot.w++; slot.tw = (slot.tw || 0) + o.n; }
+    else if (o.r === "loss") slot.l++; else slot.u++;
+  };
 
   try{
     for (let i = first; i <= lastBar; i += 1){
@@ -2514,7 +2530,7 @@ async function runBacktest(){
         S.levelsKey = S.symbol + "|" + S.tf;                  // readState trusts the cache by key
       }
 
-      const oUp = btOutcome(bars, ind, i, 1), oDn = btOutcome(bars, ind, i, -1);
+      const oUp = btOutcomeFull(bars, ind, i, 1), oDn = btOutcomeFull(bars, ind, i, -1);
       tally(acc.base.up, oUp); tally(acc.base.dn, oDn);
 
       const st = readState(i);
@@ -2535,7 +2551,7 @@ async function runBacktest(){
       for (const sig of S.btCollect){
         if (sig.dir !== "up" && sig.dir !== "down") continue;
         const slot = acc.signals[sig.type] || (acc.signals[sig.type] = { w:0, l:0, u:0 });
-        tally(slot, btOutcome(bars, ind, i, sig.dir === "up" ? 1 : -1));
+        tally(slot, btOutcomeFull(bars, ind, i, sig.dir === "up" ? 1 : -1));
       }
     }
     renderBacktest(out, acc, N, note);
@@ -2573,8 +2589,11 @@ function renderBacktest(out, acc, N, note){
     if (n < (minN ?? 20)) return `<tr><td>${label}</td><td class="dim">${n}</td><td class="dim" colspan="3">too few to judge</td></tr>`;
     const p = pct(sl), b = base == null ? null : pct(base), d = b == null ? null : p - b;
     const cls = d == null ? "dim" : d >= 3 ? "pos" : d <= -3 ? "neg" : "dim";
+    const spd = sl.w >= 5 && sl.tw
+      ? `wins in ~${Math.round(sl.tw/sl.w)} bars (${Math.round(sl.tw/sl.w * TF_MS[S.tf]/6e4)}m)` : "";
+    const extra = [sl.u ? Math.round(100*sl.u/n) + "% unresolved" : "", spd].filter(Boolean).join(" · ");
     return `<tr><td>${label}</td><td>${n}</td><td><b>${p}%</b></td>
-      <td class="dim">${sl.u ? Math.round(100*sl.u/n) + "% unresolved" : ""}</td>
+      <td class="dim">${extra}</td>
       <td class="${cls}">${d == null ? "—" : (d >= 0 ? "+" : "") + d + " vs base"}</td></tr>`;
   };
   const baseUp = acc.base.up, baseDn = acc.base.dn;
@@ -2599,7 +2618,7 @@ function renderBacktest(out, acc, N, note){
   out.innerHTML = `<div class="cards">
     <div class="card">
       <div class="btverdict ${vCls}">${vTxt}</div>
-      <div class="fline hint">${N} bars of ${esc(S.symbol)} ${S.tf} · outcome = which of ±1 ATR hit first within 20 bars · the baseline is what guessing that direction on every bar would have scored.</div>
+      <div class="fline hint">${N} bars of ${esc(S.symbol)} ${S.tf} · outcome = which of ±1 ATR hit first within 20 bars · the baseline is what guessing that direction on every bar would have scored. "Wins in ~N bars" is the theta number: a slow win still bleeds premium on the way.</div>
       ${note ? `<div class="fline hint">⚠ ${note}</div>` : ""}
       <table class="btable"><tr><th>state</th><th>n</th><th>hit rate</th><th></th><th>edge</th></tr>
         <tr><td class="dim">baseline: always guess up</td><td class="dim">${tot(baseUp)}</td><td class="dim">${pct(baseUp)}%</td><td class="dim"></td><td class="dim">0</td></tr>
