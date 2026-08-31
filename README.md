@@ -24,6 +24,15 @@ causally (no future pivots — practice mode can't cheat), a read is identical
 at any zoom, borderline reads say so, and backtest outcomes stop at the
 session close because a day trader is flat overnight.
 
+On a MOVING read, the **"How much is left"** card answers the question a
+forecast can't: this move's age and travel against the measured distribution
+of every completed run on this same chart (quartiles, with sample sizes), a
+fresh / mid-move / past-typical-travel position, and the distance to the next
+tested level at the move's current pace — history and arithmetic, each
+labeled as what it is. The backtest's **chase test** (entering moves fresh vs
+≥4 bars old) measures whether late entries actually score worse on your
+chart, and the copy admits it when they don't.
+
 A **state timeline** under the verdict strip shows today's path — when the
 chart flipped from quiet to coiling to moving — and each chip clicks through
 to that bar's full read. "Read current bar" follows the live bar as data

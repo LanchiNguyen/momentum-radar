@@ -318,6 +318,11 @@
     <h2>How to read this</h2>
     <p>Your entries fail when you buy hope inside chop. Every alert here encodes the same rule: <b>compression tells you a move is loading, volume tells you the move is real, and only the combination is an entry.</b> No signal, no trade — let the tool watch the chart so you don't.</p>
     <div class="cards">
+      <details class="card"><summary>Why no price target or ETA (and what you get instead)</summary>
+        <p>This tool used to project: a lean score, "similar setups moved $X" percentages, a dotted path. Its own backtest measured all of it as a <b>coin flip</b> — strong signals scored <i>worse</i> than modest ones — so it was deleted. Any read built from completed bars describes what has already started; dressing that as a forecast is how tools earn false trust.</p>
+        <p>What you get instead is measured: on a MOVING read, the <b>How much is left</b> card shows this move's age and travel against the distribution of every completed run on this same chart, plus the distance to the next tested level at the move's current pace. History and arithmetic, each labeled as what it is.</p>
+        <p class="why">The practical rule it supports: enter moves while they're fresh (the backtest's fresh-vs-late rows measure the chase penalty on your own chart), and take targets from structure, not from hope.</p>
+      </details>
       <details class="card"><summary>Squeeze (the "about to move" indicator)</summary>
         <p>The middle panel is a TTM-style squeeze. Consolidation is volatility compression: Bollinger Bands (2σ) shrink inside Keltner Channels (1.5 ATR).</p>
         <ul>
@@ -426,6 +431,8 @@ const S = {
   quotaOut: null,       // source id whose provider limit we've hit today
   histLvl: null,        // memoized causal level set for one historical read
   histLvlKey: "",
+  runs: null,           // memoized run distribution (measureRuns)
+  runsKey: "",
   stateHist: [],        // closed-bar state transitions — the "what changed" trail
   followLive: false,    // Read pane tracks the newest bar as data arrives
   tickWs: null,         // Finnhub real-time trade stream (optional)
@@ -1960,6 +1967,63 @@ function esc(s){ return String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&
    Five states, no scores, no leans, no forecasts — the backtest showed the
    forecast layer measured as a coin flip, so it was removed. Everything here
    is a description a trader can act on with their own rules. */
+/* The tape rule, shared by the state engine and the run statistics so they can
+   never disagree: net drift of the last 6 closes, CLAMPED to the current
+   session on stock feeds. Reaching across the overnight gap turned every open
+   into "MOVING (confirmed)" off the gap itself — a green light to chase at
+   9:30 — so the first bars of a session read as unreadable instead. */
+function tapeAt(cs, ind, i){
+  const c = cs[i], atr = ind.atr[i] || 0;
+  let back = Math.min(6, i);
+  if (sessionedFeed()){
+    const d = etDayKey(c.t);
+    let j = i - back;
+    while (j < i && etDayKey(cs[j].t) !== d) j++;
+    back = i - j;
+  }
+  const net = back > 0 ? c.c - cs[i-back].c : 0;
+  const fresh = sessionedFeed() && back < 2;
+  const dir = (!fresh && back >= 2 && atr > 0 && Math.abs(net) >= 0.7*atr) ? (net > 0 ? 1 : -1) : 0;
+  return { dir, back, net, fresh };
+}
+
+/* Every completed directional run in cs[46..upto]: how many bars the tape
+   held one direction, and the max favorable excursion from the flip bar's
+   close, in ATR-at-flip. Causal — only bars ≤ upto — so a practice read of a
+   past bar is typed by the runs that existed THEN. Runs cannot span the
+   overnight gap: tapeAt reads the session's opening bars as no-direction. */
+function measureRuns(cs, ind, upto){
+  const key = S.symbol + "|" + S.tf + "|" + upto + "|" + cs.length;
+  if (S.runsKey === key && S.runs) return S.runs;
+  const up = [], dn = [];
+  let dir = 0, start = -1;
+  const commit = endIdx => {
+    const a = ind.atr[start] || 0; if (!a) return;
+    const e = cs[start].c;
+    let mfe = 0;
+    for (let k = start; k <= endIdx; k++)
+      mfe = Math.max(mfe, dir > 0 ? cs[k].h - e : e - cs[k].l);
+    (dir > 0 ? up : dn).push({ len: endIdx - start + 1, travel: mfe / a });
+  };
+  for (let i = 46; i <= upto; i++){
+    const d = tapeAt(cs, ind, i).dir;
+    if (d !== dir){
+      if (dir !== 0 && start >= 0) commit(i - 1);
+      dir = d; start = d !== 0 ? i : -1;
+    }
+  }
+  // the run still in progress at upto is deliberately NOT counted — it hasn't
+  // finished, and counting it would shrink the distribution toward "so far"
+  S.runsKey = key; S.runs = { up, dn };
+  return S.runs;
+}
+function runStats(list, pick){
+  if (list.length < 8) return null;             // too few to type this chart
+  const v = list.map(pick).sort((a, b) => a - b);
+  const q = f => v[Math.max(0, Math.min(v.length - 1, Math.round(f * (v.length - 1))))];
+  return { n: v.length, q1: q(0.25), med: q(0.5), q3: q(0.75) };
+}
+
 function readState(i){
   const cs = S.candles, ind = S.ind;
   if (!cs || !ind || i < 45 || i >= cs.length) return null;
@@ -1968,19 +2032,8 @@ function readState(i){
   const rvol = ind.rvol[i];
   const aboveVwap = c.c > ind.vwap[i];
 
-  // the tape: net drift of the last 6 closes — CLAMPED to the current session
-  // on stock feeds. Reaching across the overnight gap turned every open into
-  // "MOVING (confirmed)" off the gap itself, a green light to chase at 9:30.
-  let back = Math.min(6, i);
-  if (sessionedFeed()){
-    const d = etDayKey(c.t);
-    let j = i - back;
-    while (j < i && etDayKey(cs[j].t) !== d) j++;
-    back = i - j;
-  }
-  const net6 = back > 0 ? c.c - cs[i-back].c : 0;
-  const freshSession = sessionedFeed() && back < 2;   // opening bar(s): tape unreadable
-  const tapeDir = (!freshSession && back >= 2 && atr > 0 && Math.abs(net6) >= 0.7*atr) ? (net6 > 0 ? 1 : -1) : 0;
+  const tape = tapeAt(cs, ind, i);
+  const back = tape.back, net6 = tape.net, freshSession = tape.fresh, tapeDir = tape.dir;
 
   // nearest tested levels, with failed-attempt episodes over the last 60 bars.
   // The cache is only valid at the LIVE edge: it was built on the full history,
@@ -2030,6 +2083,25 @@ function readState(i){
     if (box < 1.5*atr && eff < 0.4 && tapeDir === 0) stalled = { top: hh, bot: ll };
   }
 
+  // how old is THIS move, and how do finished moves on this chart run?
+  // (skipped during backtest replay — the replay measures age its own way,
+  // and recomputing run distributions per historical bar would be O(N²))
+  let run = null;
+  if (tapeDir !== 0 && !S.btCollect){
+    let flip = i;
+    while (flip - 1 >= 46 && tapeAt(cs, ind, flip - 1).dir === tapeDir) flip--;
+    const fa = ind.atr[flip] || atr, fe = cs[flip].c;
+    let mfe = 0;
+    for (let k = flip; k <= i; k++)
+      mfe = Math.max(mfe, tapeDir > 0 ? cs[k].h - fe : fe - cs[k].l);
+    let lastClosedRun = cs.length - 1; if (!cs[lastClosedRun].closed && lastClosedRun > 0) lastClosedRun--;
+    const all = measureRuns(cs, ind, Math.min(i, lastClosedRun));
+    const list = tapeDir > 0 ? all.up : all.dn;
+    run = { age: i - flip + 1, flipT: cs[flip].t, flipPx: fe,
+            travel: fa ? mfe / fa : 0,
+            len: runStats(list, r => r.len), trv: runStats(list, r => r.travel) };
+  }
+
   // thresholds are cliffs; say when a read sits right on one instead of
   // flickering between labels with false confidence
   const edgeNotes = [];
@@ -2060,7 +2132,7 @@ function readState(i){
     state = "moving"; dir = tapeDir;
     const confirmed = isFinite(rvol) && rvol >= thr;
     detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) : "?"} ATR) over the last ${back} bars (${Math.round(back*TF_MS[S.tf]/6e4)} min) on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm; unbacked moves are the fakeouts that trap you"}.`;
-    return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i] };
+    return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
   } else if (freshSession){
     state = "quiet";
     detail = `Session just opened — only ${back + 1} bar${back ? "s" : ""} so far, the tape is not readable yet. The overnight gap is not momentum. ${rvTxt}.`;
@@ -2068,7 +2140,7 @@ function readState(i){
     state = "quiet";
     detail = `Nothing happening: no thrust, no compression, no level under pressure. ${rvTxt}. This is the tape that eats premium — the alerts are watching so you don't have to.`;
   }
-  return { i, c, atr, state, dir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i] };
+  return { i, c, atr, state, dir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
 }
 
 const STATE_LABEL = {
@@ -2098,6 +2170,8 @@ function renderVerdictBar(){
   if (a.keyLevels.res) bits.push(chip(`ceiling $${fmtPx(a.keyLevels.res.price)} ×${a.keyLevels.res.touches}`));
   if (a.keyLevels.sup) bits.push(chip(`floor $${fmtPx(a.keyLevels.sup.price)} ×${a.keyLevels.sup.touches}`));
   bits.push(chip(a.aboveVwap ? "above VWAP" : "below VWAP"));
+  if (a.state === "moving" && a.run)
+    bits.push(chip(`move age ${a.run.age}b${a.run.len ? ` · median run ${a.run.len.med}b` : ""}`, a.run.trv && a.run.travel > a.run.trv.q3 ? "con" : ""));
   if (isFinite(a.stoch)) bits.push(chip(`Stoch RSI ${Math.round(a.stoch)}${a.stoch >= 80 ? " — stretched" : a.stoch <= 20 ? " — washed out" : ""}`));
   if (a.edgeNotes && a.edgeNotes.length) bits.push(chip("≈ borderline", "con"));
   $("vb-chips").innerHTML = bits.join("");
@@ -2144,6 +2218,45 @@ function renderRead(i){
   if (a.keyLevels.sup)
     rows.push([`Tested floor ×${a.keyLevels.sup.touches}${a.keyLevels.sup.rej >= 2 ? ` (held ${a.keyLevels.sup.rej}× recently)` : ""}`, a.keyLevels.sup.price]);
   if (a.lvl) rows.push(["Value area top", a.lvl.vah], ["POC (magnet)", a.lvl.poc], ["Value area bottom", a.lvl.val]);
+  // "how long could this last" — answered with this chart's own measured past,
+  // never a forecast. The projection layer that pretended to know was deleted
+  // after its backtest scored a coin flip; this card is what survives honestly.
+  const runHtml = (a.run && (a.state === "moving" || a.state === "wall")) ? (() => {
+    const r = a.run;
+    const mins = n => Math.round(n * TF_MS[S.tf] / 6e4);
+    const f1 = x => x.toFixed(1);
+    const dirWord = a.dir > 0 ? "Up" : "Down";
+    let statsLine, posLine = "";
+    if (r.len && r.trv){
+      statsLine = `${dirWord}-runs on this chart (${r.len.n} completed): ` +
+        `${r.len.q1}–${r.len.q3} bars, median ${r.len.med} (${mins(r.len.med)} min) · ` +
+        `travel ${f1(r.trv.q1)}–${f1(r.trv.q3)} ATR, median ${f1(r.trv.med)}.`;
+      posLine = r.travel < r.trv.q1
+        ? `<b>Fresh</b> — under the 25th percentile of past travel here.`
+        : r.travel <= r.trv.q3
+        ? `<b>Mid-move</b> — inside the typical travel range. The edge decays from here.`
+        : `<b>Past the typical FULL travel</b> of ${dirWord.toLowerCase()}-moves on this chart — entering now is buying the tail.`;
+    } else {
+      statsLine = `Fewer than 8 completed ${dirWord.toLowerCase()}-runs on this chart — not enough history to type them. Load a smaller timeframe for more runs.`;
+    }
+    const lvlObj = a.dir > 0 ? a.keyLevels.res : a.keyLevels.sup;
+    const dist = lvlObj ? Math.abs(lvlObj.price - a.c.c) : null;
+    const pace = r.age > 0 ? Math.abs(a.c.c - r.flipPx) / r.age : 0;
+    const eta = dist != null && pace > 0.05 * a.atr ? Math.ceil(dist / pace) : null;
+    const lvlName = a.dir > 0 ? "ceiling" : "floor";
+    const structLine = lvlObj
+      ? `Next tested ${lvlName}: $${fmtPx(lvlObj.price)} — $${fmtPx(dist)} away (${a.atr ? f1(dist / a.atr) : "?"} ATR)` +
+        (eta ? `. At this move's pace (~$${fmtPx(pace)}/bar) that is ~${eta} bar${eta > 1 ? "s" : ""} (~${mins(eta)} min) — arithmetic, not a forecast: IF the pace holds. Walls end moves; clocks don't.`
+             : `. The move's pace is too shallow to give an honest time-to-level.`)
+      : `No tested ${lvlName} ${a.dir > 0 ? "above" : "below"} on this chart — no measured structure to lean a target on.`;
+    return `<div class="card"><h3>How much is left — measured, not promised</h3>
+      <div class="fline">This move: <b>${r.age} bar${r.age > 1 ? "s" : ""} old</b> (${mins(r.age)} min) · traveled <b>${f1(r.travel)} ATR</b> since the flip at $${fmtPx(r.flipPx)} (${etHM(r.flipT)}).</div>
+      <div class="fline">${statsLine}</div>
+      ${posLine ? `<div class="fline">${posLine}</div>` : ""}
+      <div class="fline hint">${structLine}</div>
+    </div>`;
+  })() : "";
+
   const lvlHtml = rows.length ? `<div class="card"><h3>The levels that matter ($)</h3>` + rows
     .map(([nm,p]) => `<div class="fline"><span>${nm}</span><b>&nbsp;$${fmtPx(p)}</b><span class="fpct">${p >= a.c.c ? "+" : "−"}$${fmtPx(Math.abs(p - a.c.c))} away</span></div>`).join("") +
     `<div class="fline hint">Typical bar range here: $${fmtPx(a.atr)} (1 ATR). Targets beyond the next level need the level to break first; stops inside 1 ATR get hit by noise.</div>` +
@@ -2172,6 +2285,7 @@ function renderRead(i){
       ${a.edgeNotes && a.edgeNotes.length ? `<div class="fline hint">≈ ${a.edgeNotes.join(" · ")} — a read this close to its threshold can flip on the next bar.</div>` : ""}
       <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
     </div>
+    ${runHtml}
     ${lvlHtml}
     ${revealHtml}
   </div>`;
@@ -2507,10 +2621,12 @@ async function runBacktest(){
   const ind = S.ind, N = bars.length;
   const first = 60, lastBar = N - 21;
 
+  let curDir = 0, curAge = 0;   // the replay's own move-age tracker
   const acc = {
     base: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
     move: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
     conf: { yes: { w:0, l:0, u:0 }, no: { w:0, l:0, u:0 } },
+    age:  { fresh: { w:0, l:0, u:0 }, late: { w:0, l:0, u:0 } },
     veto: {}, signals: {},
   };
   const tally = (slot, o) => {
@@ -2533,12 +2649,20 @@ async function runBacktest(){
       const oUp = btOutcomeFull(bars, ind, i, 1), oDn = btOutcomeFull(bars, ind, i, -1);
       tally(acc.base.up, oUp); tally(acc.base.dn, oDn);
 
+      // run age, maintained incrementally (readState skips run stats in replay)
+      const td = tapeAt(bars, ind, i).dir;
+      if (td === 0){ curDir = 0; curAge = 0; }
+      else if (td === curDir) curAge++;
+      else { curDir = td; curAge = 1; }
+
       const st = readState(i);
       if (st){
         if (st.state === "moving"){
           const o = st.dir > 0 ? oUp : oDn;
           tally(st.dir > 0 ? acc.move.up : acc.move.dn, o);
           tally(st.confirmed ? acc.conf.yes : acc.conf.no, o);
+          if (curAge <= 2) tally(acc.age.fresh, o);
+          else if (curAge >= 4) tally(acc.age.late, o);
         } else {
           // no-trade states: score "up first" — near the baseline means the
           // state genuinely carries no direction, which is the claim
@@ -2579,6 +2703,20 @@ function confBase(acc){
   const w = (p(acc.base.up) * nUp + p(acc.base.dn) * nDn) / n;
   const scale = 1000;
   return { w: Math.round(w * scale), l: Math.round((1 - w) * scale), u: 0 };
+}
+
+/* The fresh-vs-late comparison decides how much weight the "move age" readout
+   deserves ON THIS CHART — and the copy admits it when the answer is "none". */
+function chaseVerdict(acc){
+  const tot = sl => sl.w + sl.l + sl.u;
+  const pct = sl => { const r = tot(sl); return r ? 100 * sl.w / r : 0; };
+  const f = acc.age.fresh, l = acc.age.late;
+  if (tot(f) < 20 || tot(l) < 20)
+    return "Chase test: too few fresh/late samples on this history to judge whether late entries score worse here.";
+  const d = Math.round(pct(f) - pct(l));
+  if (d >= 5) return `Chase test: entering moves LATE scored ${d} points worse than entering fresh on this history — the move-age readout is earning its keep.`;
+  if (d <= -5) return `Chase test: late entries actually scored ${-d} points BETTER on this history (persistent-trend regime) — treat the age readout as context, not a rule.`;
+  return "Chase test: fresh and late entries scored about the same on this history — the age readout is context, not an edge.";
 }
 
 function renderBacktest(out, acc, N, note){
@@ -2627,8 +2765,11 @@ function renderBacktest(out, acc, N, note){
         ${row("MOVING DOWN, traded with it", acc.move.dn, baseDn)}
         ${row("· volume-confirmed moves only", acc.conf.yes, confBase(acc))}
         ${row("· unconfirmed moves", acc.conf.no, confBase(acc))}
+        ${row("· entered FRESH (move ≤2 bars old)", acc.age.fresh, confBase(acc))}
+        ${row("· entered LATE (move ≥4 bars old)", acc.age.late, confBase(acc))}
       </table>
       <div class="fline hint">The split that matters: confirmed vs unconfirmed. If confirmed beats unconfirmed here, the RVOL gate is earning its keep.</div>
+      <div class="fline hint">${chaseVerdict(acc)}</div>
     </div>
     <div class="card"><h3>No-trade states — do they really carry no direction?</h3>
       <table class="btable"><tr><th>state</th><th>n</th><th>up-first</th><th></th><th>vs base</th></tr>${vetoRows || '<tr><td class="dim" colspan="5">none seen</td></tr>'}</table>
