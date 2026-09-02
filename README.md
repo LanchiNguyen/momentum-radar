@@ -70,8 +70,15 @@ discipline (journal). The state line says one of five things: **MOVING**
 
 ## What it shows
 
-- **State line** (always visible): the one-glance answer — moving, at a wall,
-  coiling, chop, or quiet — with RVOL and the nearest tested levels.
+- **The state block** (always visible, biggest thing on the page): the
+  one-glance answer — MOVING, AT A TESTED WALL, COILING, CHOP, or QUIET — with
+  a volume-confirmation flag, one sentence of why, today's path as a dot strip,
+  and four tiles: RVOL against the gate, move age against past runs, the next
+  wall in dollars and ATR, and the session (VWAP side, Stoch RSI, POC).
+- **The chart fills the rest of the screen.** Squeeze, volume and Stoch RSI
+  panels are opt-in toggles at the chart's top-right. Read, Alerts and Ask live
+  in a drawer at the bottom; the journal, backtest and learn material live in a
+  separate Review view (bottom-right link), so the live screen never scrolls.
 - **Squeeze panel** (TTM-style): Bollinger Bands compressing inside Keltner
   Channels. Red dots = coiling, do not enter. Green dot = released, the move
   is starting. Histogram gives direction.
