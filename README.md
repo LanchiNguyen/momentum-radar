@@ -38,6 +38,26 @@ chart flipped from quiet to coiling to moving — and each chip clicks through
 to that bar's full read. "Read current bar" follows the live bar as data
 arrives; ‹ › buttons (or ← →) step bar by bar.
 
+## Ask — a coach over the numbers, not an oracle
+
+The **Ask** tab sends a question to Claude together with a snapshot of what
+the tool has *measured*: the current state and levels, today's state path,
+the move-run statistics, alerts, your journal, and the last backtest summary.
+It never receives raw candles, and its instructions forbid forecasts —
+direction, targets, timing — for the same reason the tool makes none. Where
+it earns its keep: **patterns in your own journal** (state at entry, time of
+day, failure tags, the language of your theses) and plain-English
+explanations of what the panels are showing.
+
+It uses **your own Anthropic API key** (create one at console.anthropic.com;
+needs prepaid credits, and set a monthly spend cap there). Calls go straight
+from your browser to `api.anthropic.com` — there is no server in between —
+and each answer shows its estimated cost (roughly 1–3¢ at list price). The
+key is stored in this browser only and, unlike the data keys, is **never**
+written into the page address, so a bookmark cannot carry it. Conversation
+history lives in the tab for the session; server-side refusal fallbacks are
+enabled by default.
+
 ## The design principle
 
 An honest tool for an efficient intraday market cannot predict — the built-in
