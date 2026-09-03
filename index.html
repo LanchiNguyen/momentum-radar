@@ -30,8 +30,11 @@
   }
   body.light{
     --bg:#f3f5f8; --panel:#ffffff; --border:#d8dee7; --text:#1a2029; --muted:#5f6b7a;
-    --up:#1f9d8d; --down:#d9534a; --accent:#b8861f; --teal:#1f9d8d; --cyan:#0d84a6; --blue:#2f5fd0;
-    --yellow:#a08a10; --red:#d9534a; --good:#1f9d8d; --onteal:#ffffff;
+    /* AA against both #fff and the page ground at the sizes these are actually
+       used at — the rule legs, chips and tab labels are 11-13px, where the old
+       set sat at 3.0-3.4:1 */
+    --up:#197e71; --down:#bf4941; --accent:#906918; --teal:#197e71; --cyan:#0a6a86; --blue:#2a4fb0;
+    --yellow:#7d6c0c; --red:#bf4941; --good:#197e71; --onteal:#ffffff;
     --grid:rgba(20,40,70,0.08); --crosshair:rgba(20,40,70,0.30);
     --stochguide:rgba(20,40,70,0.14); --panellabel:rgba(20,40,70,0.45);
     --kcfill:rgba(90,110,150,0.09); --kcline:rgba(80,100,140,0.45); --bbline:rgba(10,130,170,0.55);
@@ -68,6 +71,11 @@
   .tfbtn.active{background:var(--teal); color:var(--onteal);}
   #symbol{font-family:"Space Grotesk","IBM Plex Sans",system-ui,sans-serif; letter-spacing:.04em; width:86px; background:var(--panel);}
   #databtn, #themebtn{background:transparent; border:none; color:var(--muted); padding:6px 6px; font-size:15px; flex:none;}
+  /* an error has to be readable: it used to be one nowrap line with its own
+     instruction ("hit Diagnose") cut off by the ellipsis */
+  #status.err{white-space:normal; overflow:visible; text-overflow:clip; max-width:none; flex:1 1 100%; order:9; line-height:1.35;}
+  #status.err #statusdiag{margin-left:8px; padding:2px 8px; font-size:11px; border-radius:5px;
+    background:var(--down); color:#fff; border:none; cursor:pointer;}
   header .ctl{flex:none;}
   #databtn:hover, #themebtn:hover{color:var(--text);}
   #livebox{margin-left:auto; flex:none; display:flex; align-items:center; gap:7px; padding:5px 10px;
@@ -145,7 +153,24 @@
   .tile.rule .rl.good{color:var(--teal);} .tile.rule .rl.bad{color:var(--muted);}
   .tile.rule .rl.good span{color:var(--text);}
   .histchip.brk .dot{background:var(--accent);}
+  /* On a wide screen the read sits BESIDE the chart — the layout this file's
+     comments have always claimed. Measured before this change: opening the
+     drawer hid 70% of the chart at 1440x900 and 90% at 1280x720, including the
+     bar that had just been clicked. */
   main{display:block; padding-bottom:46px;}
+  @media (min-width:1100px){
+    main{display:grid; grid-template-columns:minmax(0,1fr) 0; align-items:start; padding-bottom:46px;}
+    main.side{grid-template-columns:minmax(0,1fr) 400px;}
+    main.side aside{position:static; max-height:none; overflow:hidden;
+      border-top:none; border-left:1px solid var(--border); box-shadow:none;}
+    main.side .drawerbody{max-height:none; border-top:1px solid var(--border); overflow-y:auto;}
+    /* the drawer is 400px wide here: the tab row has to stay one line, or it
+       wraps into the pane it sits above */
+    main.side .tabbar{padding:0 10px; gap:2px;}
+    main.side .tabbtn{padding:7px 9px;}
+    main.side .rvlong{display:none;}
+    main.side #reviewbtn{margin-left:auto; font-size:11px;}
+  }
   #chartwrap{position:relative; min-width:0;}
   #ptog{position:absolute; top:8px; right:74px; display:flex; gap:6px; z-index:2;}
   .ptbtn{padding:4px 9px; font-size:11px; font-weight:500; border-radius:6px; background:var(--panel); color:var(--muted); border:1px solid var(--border);}
@@ -248,6 +273,28 @@
   footer{padding:10px 16px 24px; color:var(--muted); font-size:11px; background:var(--panel);}
   @media (max-width:900px){ #verdictbar{grid-template-columns:1fr; gap:14px;} .vb-badge{font-size:44px;}
     #vb-tiles{grid-template-columns:repeat(2,minmax(0,1fr));} #status{max-width:200px;} }
+  /* On a phone the header plus the state block used to fill 700px and leave the
+     chart below the fold, under a drawer. Everything here still says the same
+     things, smaller. */
+  @media (max-width:760px){
+    #verdictbar{padding:10px 12px; gap:8px;}
+    .vb-badge{font-size:34px;}
+    #vb-when{font-size:10px;}
+    #vb-line{font-size:12px; max-height:2.7em; overflow:hidden;}
+    #vb-tiles{gap:6px;}
+    .tile{padding:8px 10px;}
+    .tile .tl{font-size:9.5px;}
+    .tile .tv{font-size:18px;}
+    .tile .ts{font-size:10.5px;}
+    .tile.rule .rl{font-size:11px; margin-top:3px;}
+    #vb-hist{max-height:44px; overflow-x:auto; overflow-y:hidden;}
+    .histchip{min-width:52px; font-size:10px;}
+    aside{max-height:56vh;}
+    /* Reading a specific bar on a phone: the live state block would leave the
+       chart a 260px sliver under the sheet. It is one tap away again when the
+       drawer closes, and the read itself carries the same numbers. */
+    body.drawer #verdictbar, body.drawer #hintbar{display:none;}
+  }
 </style>
 </head>
 <body>
@@ -334,7 +381,7 @@
       <button id="readnow" title="Read the live, still-forming bar — and keep following it">Read current bar</button>
       <button id="stepback" title="previous bar (←)">‹</button>
       <button id="stepfwd" title="next bar (→)">›</button>
-      <button id="reviewbtn" title="journal, backtest, learn">Review · journal, backtest, learn →</button>
+      <button id="reviewbtn" title="journal, backtest, learn">Review<span class="rvlong"> · journal, backtest, learn</span> →</button>
     </div>
     <div class="drawerbody">
 
@@ -826,7 +873,21 @@ function etZone(ms){
 
 const $ = id => document.getElementById(id);
 const statusEl = $("status");
-function setStatus(txt, cls){ statusEl.textContent = txt; statusEl.title = txt; statusEl.className = cls||""; }
+function setStatus(txt, cls){
+  // an error that names Diagnose should be able to reach it: the button lives
+  // inside the ⚙ row, which is hidden whenever the keys are already set
+  if (cls === "err"){
+    statusEl.className = "err";
+    statusEl.title = txt;
+    statusEl.textContent = txt;
+    const b = document.createElement("button");
+    b.id = "statusdiag"; b.type = "button"; b.textContent = "Diagnose";
+    b.onclick = e => { e.stopPropagation(); $("datarow").hidden = false; $("diag").click(); };
+    statusEl.appendChild(b);
+    return;
+  }
+  statusEl.textContent = txt; statusEl.title = txt; statusEl.className = cls || "";
+}
 
 /* ============================== math ============================== */
 function sma(a, n){
@@ -1151,7 +1212,7 @@ function evaluateAlertsAt(i){
   const cs = S.candles, ind = S.ind;
   const thr = parseFloat($("rvolthr").value) || 1.5;
   const rvol = ind.rvol[i], c = cs[i];
-  const px = p => p >= 100 ? p.toFixed(2) : p.toPrecision(5);
+  const px = p => fmtPx(p);
 
   // 1) squeeze release after ≥5 bars on
   if ($("opt-squeeze").checked && !ind.squeeze[i]){
@@ -1694,10 +1755,16 @@ statusEl.style.cursor = "pointer";
 /* ============================== chart ============================== */
 const canvas = $("chart"), ctx = canvas.getContext("2d");
 function chartHeight(){
-  // everything above the chart plus the collapsed drawer bar; the live view never scrolls
+  // everything above the chart plus whatever the drawer actually occupies —
+  // a constant 52 was right only while the drawer was shut
   const top = canvas.getBoundingClientRect().top + window.scrollY;
-  const bar = 52;                                   // drawer bar + a few px of slack
-  return Math.max(400, window.innerHeight - top - bar);
+  let bar = 52;                                     // drawer bar + a few px of slack
+  const aside = document.querySelector("aside");
+  if (aside && S.drawerOpen && window.innerWidth < 1100)
+    bar = Math.max(bar, aside.getBoundingClientRect().height + 6);
+  // a phone reading a bar gets a short chart rather than a chart under a sheet
+  const floor = window.innerWidth < 760 ? 150 : 260;
+  return Math.max(floor, window.innerHeight - top - bar);
 }
 function layout(){
   const w = canvas.clientWidth || canvas.parentElement.clientWidth;
@@ -1711,6 +1778,15 @@ function layout(){
   }
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
+  // in the side layout the drawer is a grid cell: without a cap its content
+  // would grow the row and put the whole live view back on a scrollbar
+  const aside = document.querySelector("aside");
+  if (aside){
+    const side = S.drawerOpen && window.innerWidth >= 1100;
+    aside.style.maxHeight = side ? h + "px" : "";
+    const body = aside.querySelector(".drawerbody");
+    if (body) body.style.maxHeight = side ? Math.max(120, h - 46) + "px" : "";
+  }
   return { w, h };
 }
 
@@ -1758,7 +1834,8 @@ function updateLiveState(){
     const prev = S.stateHist[S.stateHist.length - 1];
     if (!prev || prev.sig !== sig){
       S.stateHist.push({ t: cs[li].t, state: S.liveRead.state, dir: S.liveRead.dir,
-                         confirmed: S.liveRead.confirmed, sig });
+                         confirmed: S.liveRead.confirmed,
+                         side: S.liveRead.wall ? S.liveRead.wall.side : null, sig });
       if (S.stateHist.length > 60) S.stateHist.shift();
       renderStateHist();
       // the engine knew the chart had changed character and said it only in a
@@ -1788,11 +1865,19 @@ function renderStateHist(){
     ? (x.dir > 0 ? "▲ break" : "▼ break")
     : x.state === "moving"
     ? (x.dir > 0 ? "▲ move" : "▼ move") + (x.confirmed ? " ✓" : "?")
-    : x.state === "wall" ? "wall" : x.state === "coiling" ? "coil"
+    : x.state === "wall" ? (x.side === "ceiling" ? "ceiling" : x.side === "floor" ? "floor" : "wall")
+    : x.state === "coiling" ? "coil"
     : x.state === "chop" ? "chop" : "quiet";
-  el.innerHTML = '<span class="hlabel">Today</span>' + h.map(x =>
+  // a chip from an earlier session says which one instead of a bare clock time
+  const dToday = S.candles.length ? etDayKey(S.candles[S.candles.length-1].t) : null;
+  const stamp = t => {
+    if (!(sessionedFeed() && dToday && etDayKey(t) !== dToday)) return etHM(t);
+    const p = etParts(t);
+    return `${p ? +p.month + "/" + (+p.day) + " " : ""}${etHM(t)}`;
+  };
+  el.innerHTML = `<span class="hlabel">${sessionedFeed() ? "Today" : "Recent"}</span>` + h.map(x =>
     `<button class="histchip ${x.state === "breaking" ? "brk" : x.state === "moving" ? (x.dir > 0 ? "up" : "down") : ""}${x.state === "moving" && !x.confirmed ? " unc" : ""}" data-t="${x.t}">` +
-    `<span class="dot"></span><span>${lbl(x)}</span><span class="t">${etHM(x.t)}</span></button>`).join("");
+    `<span class="dot"></span><span>${lbl(x)}</span><span class="t">${stamp(x.t)}</span></button>`).join("");
   el.querySelectorAll(".histchip").forEach(b => b.onclick = () => {
     const i = S.candles.findIndex(c => c.t === +b.dataset.t);
     if (i >= 0) selectBar(i);
@@ -1807,12 +1892,24 @@ function seedStateHist(){
   S.stateHist = [];
   if (!cs.length){ renderStateHist(); return; }
   let li = cs.length - 1; if (!cs[li].closed && li > 0) li--;
-  for (let i = Math.max(46, li - 78); i <= li; i++){
+  /* "Today" has to mean today. A fixed 78-bar window is one session on 5m only
+     by coincidence — 78 minutes on 1m, two and a half sessions on 15m — so the
+     strip opened with chips from the previous day carrying bare HH:MM labels.
+     On a stock feed it starts at the session open; crypto keeps a bar window. */
+  let from = Math.max(46, li - 78);
+  if (sessionedFeed()){
+    const d = etDayKey(cs[li].t);
+    let j = li;
+    while (j - 1 >= 46 && etDayKey(cs[j-1].t) === d) j--;
+    from = Math.max(46, j);
+  }
+  for (let i = from; i <= li; i++){
     const st = readState(i); if (!st) continue;
     const sig = st.state + "|" + st.dir + "|" + (st.confirmed ? 1 : 0);
     const prev = S.stateHist[S.stateHist.length - 1];
     if (!prev || prev.sig !== sig)
-      S.stateHist.push({ t: cs[i].t, state: st.state, dir: st.dir, confirmed: st.confirmed, sig });
+      S.stateHist.push({ t: cs[i].t, state: st.state, dir: st.dir, confirmed: st.confirmed,
+                         side: st.wall ? st.wall.side : null, sig });
   }
   renderStateHist();
 }
@@ -1901,11 +1998,23 @@ function draw(){
   band(ind.kcU, ind.kcL, getCss("--kcfill"));
   line(ind.kcU, getCss("--kcline"), [4,4]); line(ind.kcL, getCss("--kcline"), [4,4]);
   line(ind.bbU, getCss("--bbline"));  line(ind.bbL, getCss("--bbline"));
-  line(ind.vwap, getCss("--accent"), null, 1.7);
+  line(ind.vwap, getCss("--accent"), null, 1.7, true);   // resets each session
 
+  /* When a past bar is being read, the chart must show the walls that existed
+     AT that bar. It used to overlay the live-edge set: on a measured example
+     only two of six drawn levels had formed yet, so practice mode was graded
+     against hindsight the read panel carefully refused to use. */
+  const selNow = S.selT != null ? cs.findIndex(b => b.t === S.selT) : -1;
+  let lastClosedIdx = cs.length - 1; if (cs.length && !cs[lastClosedIdx].closed && lastClosedIdx > 0) lastClosedIdx--;
+  const past = selNow >= 0 && selNow < lastClosedIdx;
+  const drawLevels = past
+    ? (S.histLvlKey === S.symbol + "|" + S.tf + "|" + selNow + "|" + cs.length && S.histLvl
+        ? S.histLvl
+        : findLevels(cs, selNow, ind).sort((a,b) => b.touches - a.touches).slice(0, 6))
+    : S.levels;
   // tested horizontal levels: dashes weighted by how many times price hit them
-  if (S.levels){
-    for (const L of S.levels){
+  if (drawLevels){
+    for (const L of drawLevels){
       if (L.price < lo || L.price > hi) continue;
       const yy = Y(L.price);
       ctx.strokeStyle = getCss("--lvlline");
@@ -1915,14 +2024,15 @@ function draw(){
       ctx.setLineDash([]); ctx.lineWidth = 1;
       ctx.fillStyle = getCss("--panellabel");
       ctx.font = "10px sans-serif";
-      ctx.fillText(`×${L.touches}`, plotW - profW - 24, yy - 3);   // clear of the profile strip
+      // the tile names a price, so the line has to carry one too
+      ctx.fillText(`$${fmtPx(L.price)} ×${L.touches}`, plotW - profW - 74, yy - 3);
       ctx.font = "11px sans-serif";
     }
   }
 
   // unfilled fair-value gaps, drawn from birth to the right edge
   if ($("opt-fvg") && $("opt-fvg").checked){
-    for (const g of findFVGs(cs, i1, ind)){
+    for (const g of findFVGs(cs, past ? selNow : i1, ind)){
       if (g.top < lo || g.bot > hi) continue;
       const x0 = g.born >= i0 ? X(g.born) : 0;
       ctx.fillStyle = g.dir > 0 ? getCss("--fvgup") : getCss("--fvgdn");
@@ -1958,6 +2068,29 @@ function draw(){
   }
 
   // clicked-bar marker (behind the candles)
+  /* Three bars matter and none of them were marked: the one the verdict speaks
+     for, the one still forming, and the one where the current move began. */
+  if (S.liveReadT != null){
+    const li = cs.findIndex(b => b.t === S.liveReadT);
+    if (li >= i0 && li <= i1){
+      ctx.strokeStyle = getCss("--muted"); ctx.setLineDash([2,3]);
+      ctx.beginPath(); ctx.moveTo(X(li), 0); ctx.lineTo(X(li), panels[0].hh); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  if (S.liveRead && S.liveRead.run){
+    const fi = cs.findIndex(b => b.t === S.liveRead.run.flipT);
+    if (fi >= i0 && fi <= i1){
+      ctx.fillStyle = getCss(S.liveRead.dir > 0 ? "--up" : "--down");
+      ctx.globalAlpha = .8;
+      ctx.beginPath();
+      ctx.moveTo(X(fi), panels[0].hh - 2); ctx.lineTo(X(fi)-4, panels[0].hh - 9); ctx.lineTo(X(fi)+4, panels[0].hh - 9);
+      ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = getCss("--muted"); ctx.font = "9px sans-serif";
+      ctx.fillText("move began", Math.min(X(fi) + 6, plotW - 60), panels[0].hh - 3);
+      ctx.font = "11px sans-serif";
+    }
+  }
   const selIdx = S.selT != null ? cs.findIndex(b => b.t === S.selT) : -1;
   if (selIdx >= i0 && selIdx <= i1){
     ctx.fillStyle = getCss("--selfill");
@@ -1977,10 +2110,14 @@ function draw(){
     ctx.fillRect(x-cw/2, Math.min(yO,yC), cw, Math.max(1, Math.abs(yC-yO)));
   }
 
-  function line(a, color, dash, lw){
+  /* `perSession` breaks the path at each session open. VWAP resets there, so
+     drawing it as one continuous line joined yesterday's closing VWAP to
+     today's first bar with a diagonal worth two ATR that no one traded. */
+  function line(a, color, dash, lw, perSession){
     ctx.strokeStyle = color; ctx.lineWidth = lw||1.1; if (dash) ctx.setLineDash(dash);
     ctx.beginPath(); let started = false;
     for (let i=i0;i<=i1;i++){ const v=a[i]; if (isNaN(v)){started=false;continue;}
+      if (perSession && sessionedFeed() && i>0 && etDayKey(cs[i].t)!==etDayKey(cs[i-1].t)) started=false;
       const x=X(i), y=Y(v); if (!started){ctx.moveTo(x,y); started=true;} else ctx.lineTo(x,y); }
     ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1;
   }
@@ -2088,12 +2225,44 @@ function draw(){
   ctx.strokeStyle = getCss("--border");
   panels.slice(1).filter(p => p.hh > 0).forEach(p=>{ ctx.beginPath(); ctx.moveTo(0,p.y); ctx.lineTo(w,p.y); ctx.stroke(); });
   ctx.fillStyle = getCss("--muted"); ctx.textAlign = "center";
-  const step = Math.max(1, Math.round(n/8));
-  for (let i=i0;i<=i1;i+=step){
-    const d = new Date(cs[i].t);
-    const lbl = (S.tf==="1h" || S.tf==="2h") ? etStamp(cs[i].t) : etHM(cs[i].t);
-    ctx.fillText(lbl, X(i), h-8);
+  /* Bars are drawn contiguously across the overnight gap, so without this the
+     axis reads 13:45, 15:25, 10:35 — time running backwards with nothing to
+     say why. Each session gets a rule and a date. */
+  const dayStarts = [];
+  if (sessionedFeed()) for (let i = Math.max(i0,1); i <= i1; i++)
+    if (etDayKey(cs[i].t) !== etDayKey(cs[i-1].t)) dayStarts.push(i);
+  // with many sessions on screen, label every other one rather than none
+  const dayLabelEvery = dayStarts.length > 6 ? Math.ceil(dayStarts.length / 5) : 1;
+  ctx.save();
+  ctx.strokeStyle = getCss("--border"); ctx.setLineDash([2,3]);
+  for (const i of dayStarts){
+    const x = X(i) - bw/2;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h-18); ctx.stroke();
   }
+  ctx.restore();
+  const step = Math.max(1, Math.round(n/8));
+  const dayset = new Set(dayStarts);
+  /* Session labels are placed first: they are the ones that explain why the
+     clock appears to run backwards across the overnight gap, so a routine tick
+     must never displace one. */
+  const order = [...dayStarts.filter((_,k)=> k % dayLabelEvery === 0),
+                 ...Array.from({length: Math.floor((i1-i0)/step)+1}, (_,k)=> i0 + k*step)];
+  const placed = [];
+  const seen = new Set();
+  for (const i of order){
+    if (i < i0 || i > i1 || seen.has(i)) continue;
+    seen.add(i);
+    const x = X(i);
+    if (placed.some(px => Math.abs(px - x) < 52)) continue;   // no collisions
+    const isDay = dayset.has(i);
+    const p = etParts(cs[i].t);
+    const lbl = isDay ? `${p ? +p.month + "/" + (+p.day) : ""} ${etHM(cs[i].t)}`
+              : (S.tf==="1h" || S.tf==="2h") ? etStamp(cs[i].t) : etHM(cs[i].t);
+    ctx.fillStyle = getCss(isDay ? "--text" : "--muted");
+    ctx.fillText(lbl, Math.min(Math.max(x, 24), plotW - 24), h-8);
+    placed.push(x);
+  }
+  ctx.fillStyle = getCss("--muted");
   ctx.textAlign = "left";
 
   // crosshair + legend
@@ -2130,7 +2299,16 @@ function getCss(v){
   if (x === undefined){ x = getComputedStyle(document.body).getPropertyValue(v).trim(); _cssCache[v] = x; }
   return x;
 }
-function fmtPx(p){ return !isFinite(p) ? "—" : p >= 1000 ? p.toFixed(1) : p >= 10 ? p.toFixed(2) : p === 0 ? "0.00" : p.toPrecision(5); }
+/* Cents. "$0.050226 away" is not more precise than "$0.05", it just looks it —
+   and SPY does not trade in hundredths of a cent. */
+function fmtPx(p){
+  if (!isFinite(p)) return "—";
+  const a = Math.abs(p);
+  if (a >= 1000) return p.toFixed(1);
+  if (a >= 1) return p.toFixed(2);
+  if (a >= 0.01) return p.toFixed(2);        // a distance in cents is cents
+  return a === 0 ? "0.00" : p.toFixed(4);    // sub-cent only for penny symbols
+}
 function pad2(x){ return String(x).padStart(2,"0"); }
 
 /* ============================== wiring ============================== */
@@ -2648,6 +2826,23 @@ function renderVerdictBar(){
   const thr = parseFloat($("rvolthr") && $("rvolthr").value) || 1.5;
   const legs = ruleLegs(a, thr);
   const directional = a.state === "moving" || a.state === "breaking";
+  /* When the feed dies mid-session the clock turned red and the status line
+     said so in truncated 12px text — while the biggest thing on the page went
+     on saying RIGHT NOW · MOVING UP in full colour. */
+  if (S.stale){
+    const mins = Math.round((Date.now() - S.liveReadT - TF_MS[S.tf]) / 6e4);
+    badge.textContent = "STALE FEED";
+    badge.className = "vb-badge none";
+    $("vb-when").textContent = `Last read: the ${etHM(S.liveReadT + TF_MS[S.tf])} close, ${mins} min ago`;
+    flag.textContent = "no new bars — this is not the market now";
+    flag.className = "show";
+    line.textContent = "The chart below is the last good data. Open ⚙ and hit Diagnose to compare sources.";
+    tiles.innerHTML = tile("The rule", "—", "waiting for live data", "dim") +
+                      tile("Move age", "—", "frozen", "dim") +
+                      tile("Next wall", "—", "frozen", "dim") +
+                      tile("Session left", "—", "frozen", "dim");
+    return;
+  }
   // The badge used to be full-size teal whether or not volume backed the move —
   // the loudest thing on the page endorsed exactly the trade the rule rejects.
   badge.textContent = STATE_LABEL[a.state](a.dir)
@@ -2722,7 +2917,7 @@ $("verdictbar").onclick = () => {
 
 /* The one way a bar becomes the selected bar — click, "read current", the
    verdict strip and the arrow keys all land here. Deliberately no
-   scrollIntoView: the read panel sits beside the chart so both stay in view. */
+   scrollIntoView: the layout keeps the chart and the read on screen together. */
 function selectBar(i){
   const cs = S.candles;
   if (!cs.length) return;
@@ -2853,8 +3048,9 @@ function renderRead(i){
   };
 }
 
-/* The read docks beside the chart instead of below it — clicking a bar must
-   never scroll the chart out of view. */
+/* On a wide screen the read docks beside the chart; on a narrow one it is a
+   bottom sheet and the canvas shrinks to make room. Either way, clicking a bar
+   never hides the bar you clicked. */
 function showTab(name){
   document.querySelectorAll(".tabbtn").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tabpane").forEach(p => { p.hidden = p.dataset.pane !== name; });
@@ -2863,8 +3059,13 @@ function showTab(name){
 }
 function setDrawer(open){
   S.drawerOpen = !!open;
-  const a = document.querySelector("aside");
+  const a = document.querySelector("aside"), m = document.querySelector("main");
   if (a) a.classList.toggle("open", S.drawerOpen);
+  // wide screens dock it beside the chart; narrow ones keep the bottom sheet,
+  // and either way the canvas is re-measured so nothing is hidden underneath
+  if (m) m.classList.toggle("side", S.drawerOpen && window.innerWidth >= 1100);
+  document.body.classList.toggle("drawer", S.drawerOpen);
+  if (S.candles.length) draw();
 }
 document.querySelectorAll(".tabbtn").forEach(b => b.onclick = () => {
   // the active tab is a toggle: click it again to fold the drawer away
@@ -3852,6 +4053,8 @@ function tickClock(){
     }
   } else if (S.candles.length) bits.push("waiting for first update");
   box.classList.toggle("stale", stale);
+  // one source of truth for "the screen is not the market right now"
+  if (S.stale !== stale){ S.stale = stale; renderVerdictBar(); }
   el.innerHTML = wall + (bits.length ? " · " + bits.join(" · ") : "");
   // keep the on-chart countdown honest without recomputing indicators
   if (!document.hidden && S.candles.length) draw();
