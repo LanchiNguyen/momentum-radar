@@ -116,6 +116,13 @@
   .askchip:hover{color:var(--accent); border-color:var(--accent);}
   #asklog{display:flex; flex-direction:column; gap:8px; margin:6px 0; max-height:52vh; overflow-y:auto;}
   .askmsg{padding:8px 11px; border-radius:10px; font-size:13px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word;}
+  /* rendered markdown from the coach: tight, readable, no runaway spacing */
+  .askmsg.bot{white-space:normal;}
+  .askmsg.bot p{margin:0 0 7px;} .askmsg.bot p:last-child{margin-bottom:0;}
+  .askmsg.bot ul{margin:0 0 7px; padding-left:18px;} .askmsg.bot li{margin:2px 0;}
+  .askmsg.bot code{background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:12px;}
+  .askmsg.bot .askh{font-weight:700; margin:8px 0 4px; font-size:13px;}
+  .askmsg.bot .askh:first-child{margin-top:0;}
   .askmsg.user{background:var(--bg); border:1px solid var(--border); align-self:flex-end; max-width:90%;}
   .askmsg.bot{background:var(--panel); border:1px solid var(--border); align-self:stretch;}
   .askmsg.bot.live::after{content:"▍"; color:var(--accent); animation:blink 1s steps(2) infinite;}
@@ -329,23 +336,27 @@
   </div>
   <div class="ctl">
     <input id="tdkey" type="password" placeholder="stock API key" spellcheck="false"
-           title="Free key from twelvedata.com — needed for stock symbols like SPY. Saved in this browser AND in the page address, so a bookmark carries it to other devices — don't share that link.">
+           title="Free key from twelvedata.com — needed for stock symbols like SPY. Saved in this browser only. Use 'copy setup link' below to carry it to another device.">
     <a id="keylink" href="https://twelvedata.com/register" target="_blank" rel="noopener" title="Get a free key (email signup, no card)">get key</a>
     <input id="fhkey" type="password" placeholder="tick key (optional)" spellcheck="false"
-           title="Optional second free key from finnhub.io — streams every trade so the chart ticks live like TradingView. Without it the chart refreshes every 12s.">
+           title="Optional second free key from finnhub.io — streams every trade so the chart ticks live like TradingView. Without it the chart re-fetches once every 20-150s, paced to the timeframe so the free daily quota lasts the session.">
     <a id="fhlink" href="https://finnhub.io/register" target="_blank" rel="noopener" title="Free real-time US stock trades (email signup, no card)">get tick key</a>
   </div>
   <div class="ctl">
     <input id="akey" type="password" placeholder="Alpaca key ID (optional)" spellcheck="false"
-           title="Alpaca's free tier is 200 calls/min with no daily cap — the source to switch to when Twelve Data runs out. Its free volume is IEX-only (a few percent of the real tape), so RVOL still works but the volume profile is built from a thin slice. IMPORTANT: Alpaca keys are account credentials, not a read-only data token — generate them from a PAPER account. Saved in this browser and in the page address, so don't share that link.">
+           title="Alpaca's free tier is 200 calls/min with no daily cap — the source to switch to when Twelve Data runs out. Its free volume is IEX-only (a few percent of the real tape), so RVOL still works but the volume profile is built from a thin slice. IMPORTANT: Alpaca keys are account credentials, not a read-only data token — generate them from a PAPER account. Saved in this browser only, and never put in a link unless you explicitly choose to.">
     <input id="asec" type="password" placeholder="Alpaca secret (optional)" spellcheck="false"
-           title="The secret half of the Alpaca pair. Generate it from a PAPER account — a live-account pair can place real trades, and this page keeps keys in the page address.">
+           title="The secret half of the Alpaca pair. Generate it from a PAPER account — a live-account pair can place real trades. Stored in this browser only.">
     <a id="alink" href="https://app.alpaca.markets/signup" target="_blank" rel="noopener" title="Free signup — then generate PAPER account keys">get alpaca keys</a>
   </div>
   <div class="ctl">
     <input id="ankey" type="password" placeholder="Anthropic API key (for Ask)" spellcheck="false"
-           title="Powers the Ask tab. Stored in THIS browser only — unlike the data keys it is never written into the page address, so a bookmark can't carry it. Calls go straight from your browser to api.anthropic.com and bill your account: set a monthly spend cap in the console. About 1–3¢ per question.">
+           title="Powers the Ask tab. Stored in THIS browser only and never put in a link, not even the setup link. Calls go straight from your browser to api.anthropic.com and bill your account: set a monthly spend cap in the console. Typically a few cents a question; the cost of each answer is shown under it.">
     <a id="anlink" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" title="Create a key at console.anthropic.com (needs prepaid credits) — then set a spend limit under Limits">get ask key</a>
+  </div>
+  <div class="ctl">
+    <button id="copylink" type="button" title="Build a link that carries these keys to another device. Nothing is written to the address bar unless you ask for it here.">copy setup link</button>
+    <span class="hint" style="font-size:11px; color:var(--muted);">Keys live in this browser only. The Anthropic key is never put in a link.</span>
   </div>
   </div>
   <div id="livebox"><span class="pulse"></span><span id="clock">—</span></div>
@@ -477,16 +488,17 @@
         <p class="why">The practical rule it supports: enter moves while they're fresh (the backtest's fresh-vs-late rows measure the chase penalty on your own chart), and take targets from structure, not from hope.</p>
       </details>
       <details class="card"><summary>Squeeze (the "about to move" indicator)</summary>
-        <p>The middle panel is a TTM-style squeeze. Consolidation is volatility compression: Bollinger Bands (2σ) shrink inside Keltner Channels (1.5 ATR).</p>
+        <p>The squeeze panel (turn it on with <b>+ squeeze</b> above the chart) is TTM-style. Consolidation is volatility compression: Bollinger Bands (2σ) shrink inside Keltner Channels (1.5 ATR). The state block's <b>rule</b> tile shows the same thing in words — compression ON for N bars, or released K bars ago.</p>
         <ul>
-          <li><b>Red dots</b> on the zero line = squeeze ON. Energy is loading. Do <b>not</b> enter here — this is exactly where theta eats your premium while price goes nowhere.</li>
-          <li><b>Green dots</b> = squeeze released. The first green dot after ≥5 red dots is the classic trigger.</li>
+          <li><b>Amber dots</b> on the zero line = squeeze ON. Energy is loading. Do <b>not</b> enter here — this is exactly where theta eats your premium while price goes nowhere.</li>
+          <li>Dots stop when the squeeze releases. The first release after ≥5 bars on is the classic trigger, and it rings as an alert.</li>
+          <li>The histogram behind them is momentum: it is drawn in the up/down colours, full strength while it is building and faded while it is fading.</li>
           <li>The histogram gives direction: above zero and brightening = up momentum, below zero and brightening = down.</li>
         </ul>
         <p class="why">This is the answer to "when will price actually move": you can't know when, but the squeeze tells you the market is coiled, so you wait for the release instead of guessing inside the coil.</p>
       </details>
       <details class="card"><summary>RVOL (the fakeout filter)</summary>
-        <p>Relative volume = this bar's volume ÷ its 20-bar average. It is the single best fakeout filter.</p>
+        <p>Relative volume = this bar's volume ÷ what this symbol normally does <b>at this time of day</b> (the average of the same clock slot on prior sessions; it falls back to the last 20 bars until three prior days exist). Comparing 9:35 to a flat average would call every open "confirmed" and every lunch bar dead. For a move that has been running, the tool compares the volume of the whole move against the same baseline, so one quiet bar does not flip the verdict.</p>
         <ul>
           <li>Breakout on RVOL &lt; 1 → probably a fakeout. Skip it.</li>
           <li>Breakout on RVOL ≥ 1.5–2 → real participation. Bright volume bars in the panel mark these.</li>
@@ -667,19 +679,25 @@ function setAKey(k){ try { localStorage.setItem("akey", k); } catch(e){} }
 function getASec(){ try { return localStorage.getItem("asec") || ""; } catch(e){ return ""; } }
 function setASec(k){ try { localStorage.setItem("asec", k); } catch(e){} }
 /* The Ask key bills a real account. It stays in localStorage and is
-   deliberately absent from writeKeyHash below — a bookmark carries the free
+   deliberately absent from the setup link below — that link can carry the free
    data keys, never this one. */
 function getAnKey(){ try { return localStorage.getItem("ankey") || ""; } catch(e){ return ""; } }
 function setAnKey(k){ try { localStorage.setItem("ankey", k); } catch(e){} }
-function writeKeyHash(){
-  try {
-    const parts = [];
-    if (getTdKey()) parts.push("key=" + getTdKey());
-    if (getFhKey()) parts.push("fh=" + getFhKey());
-    if (getAKey()) parts.push("ak=" + getAKey());
-    if (getASec()) parts.push("as=" + getASec());
-    history.replaceState(null, "", parts.length ? "#" + parts.join("&") : "#");
-  } catch(e){}
+/* The keys used to be written into the address bar on every load and every
+   change, so an Alpaca pair — an ACCOUNT credential that can place orders —
+   sat in browser history, synced history, screenshots and screen shares
+   forever. localStorage is the only resting place now; a link is built only
+   when you ask for one, and importing from a link wipes it from the URL. */
+function buildKeyLink(withAlpaca){
+  const parts = [];
+  if (getTdKey()) parts.push("key=" + getTdKey());
+  if (getFhKey()) parts.push("fh=" + getFhKey());
+  if (withAlpaca && getAKey()) parts.push("ak=" + getAKey());
+  if (withAlpaca && getASec()) parts.push("as=" + getASec());
+  return location.origin + location.pathname + (parts.length ? "#" + parts.join("&") : "");
+}
+function clearKeyHash(){
+  try { if (location.hash) history.replaceState(null, "", location.pathname + location.search); } catch(e){}
 }
 
 /* Every request the tool makes is counted, per provider, per local day. Free
@@ -2157,7 +2175,7 @@ function draw(){
   }
   if (panels[2].hh > 0){
   /* ---------- volume panel ---------- */
-  drawPanelBg(panels[2], "VOLUME · bright = RVOL ≥ 1.5 (real participation) · line = 20-bar average");
+  drawPanelBg(panels[2], `VOLUME · bright = RVOL ≥ ${(parseFloat($("rvolthr") && $("rvolthr").value) || 1.5).toFixed(1)} (real participation) · line = the time-of-day baseline`);
   {
     const Pv = panels[2];
     let vMax=0; for (let i=i0;i<=i1;i++) vMax = Math.max(vMax, cs[i].v);
@@ -2445,19 +2463,28 @@ $("tdkey").value = getTdKey();
 $("fhkey").value = getFhKey();
 $("fhkey").addEventListener("change", e => {
   setFhKey(e.target.value.trim());
-  writeKeyHash();
   connectTicks();
 });
 $("tdkey").addEventListener("change", e => {
   setTdKey(e.target.value.trim());
-  writeKeyHash();
   start();
 });
 $("akey").value = getAKey();
 $("asec").value = getASec();
 $("datarow").hidden = !!(getTdKey() || (getAKey() && getASec()));
-$("akey").addEventListener("change", e => { setAKey(e.target.value.trim()); writeKeyHash(); start(); });
-$("asec").addEventListener("change", e => { setASec(e.target.value.trim()); writeKeyHash(); start(); });
+$("akey").addEventListener("change", e => { setAKey(e.target.value.trim()); start(); });
+$("asec").addEventListener("change", e => { setASec(e.target.value.trim()); start(); });
+/* Carrying keys to another device is still one click — it is just a click you
+   make, not something the page does behind you. */
+$("copylink").onclick = async () => {
+  const withA = !!(getAKey() && getASec()) && confirm(
+    "Include the Alpaca key pair in this link?\n\nOK = include them (the link can then place orders on that account — paper accounts only, and treat the link as the secret it is).\n\nCancel = data keys only.");
+  const url = buildKeyLink(withA);
+  const btn = $("copylink");
+  try { await navigator.clipboard.writeText(url); btn.textContent = withA ? "copied (with Alpaca)" : "copied"; }
+  catch(e){ window.prompt("Copy this link:", url); btn.textContent = "copy setup link"; }
+  setTimeout(() => { btn.textContent = "copy setup link"; }, 2500);
+};
 $("notifbtn").onclick = async () => {
   if (!("Notification" in window)) { $("notifbtn").textContent = "Notifications unsupported here"; return; }
   const p = await Notification.requestPermission();
@@ -2736,10 +2763,10 @@ function readState(i){
   }
   if (tapeDir === 1 && res && res.rej >= 3 && ref > 0 && res.price - c.c <= 1.0*ref){
     state = "wall"; wall = { side:"ceiling", ...res, dist: res.price - c.c };
-    detail = `Price is pushing up into a ceiling rejected ${res.rej}× recently — $${fmtPx(res.price)}, $${fmtPx(wall.dist)} away, ${rvTxt}. Chases die here. The trade is the resolution: a close through it (the tested-break alert fires), or the rejection back down.`;
+    detail = `Price is pushing up into a ceiling rejected ${res.rej}× in the last 60 bars — $${fmtPx(res.price)}, $${fmtPx(wall.dist)} away (${(wall.dist/ref).toFixed(1)} ATR), ${rvTxt}. The resolution is the event: a close through it fires the tested-break alert, a failure fires the rejection alert.`;
   } else if (tapeDir === -1 && sup && sup.rej >= 3 && ref > 0 && c.c - sup.price <= 1.0*ref){
     state = "wall"; wall = { side:"floor", ...sup, dist: c.c - sup.price };
-    detail = `Price is pressing down into a floor defended ${sup.rej}× recently — $${fmtPx(sup.price)}, $${fmtPx(wall.dist)} away, ${rvTxt}. The trade is the resolution: a close below it, or the bounce.`;
+    detail = `Price is pressing down into a floor defended ${sup.rej}× in the last 60 bars — $${fmtPx(sup.price)}, $${fmtPx(wall.dist)} away (${(wall.dist/ref).toFixed(1)} ATR), ${rvTxt}. The resolution is the event: a close below it fires the tested-break alert, a hold fires the rejection alert.`;
   } else if (brk){
     state = "breaking"; dir = brk.dir;
     detail = `Price closed ${brk.dir > 0 ? "above" : "below"} the last 6 bars' `
@@ -2757,7 +2784,7 @@ function readState(i){
     state = "moving"; dir = tapeDir;
     const confirmed = confNow;
     const baseTxt = isFinite(tape.base) ? ` The tape clears this chart's ${tape.thr.toFixed(2)} ATR line on ${Math.round(tape.base*100)}% of its bars.` : "";
-    detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${tape.r.toFixed(1)} ATR) over the last ${back} bars (${Math.round(back*TF_MS[S.tf]/6e4)} min) on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm, so this is not an entry by the rule"}.`
+    detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${tape.r.toFixed(1)} ATR) over the last ${back} bars (${Math.round(back*TF_MS[S.tf]/6e4)} min) on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm, so it is not an entry by this tool's rule"}.`
       + sqzTxt + baseTxt;
     return { i, c, atr, ref, state, dir, tape: tapeDir, confirmed, rvol, rvolWin: confWin.r, sqz, brk,
              aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
@@ -3021,10 +3048,10 @@ function renderRead(i){
     <div class="card">
       <div class="verdict ${headCls}">${headline}</div>
       <div class="fline hint">${esc(S.symbol)} ${S.tf} · bar ${etStamp(a.c.t)}–${etHM(a.c.t + TF_MS[S.tf])} ${etZone(a.c.t)}${forming ? " (forming — bars are named by their open time)" : ""} · price $${fmtPx(a.c.c)} · ← → to step bars</div>
-      <div class="fline hint">A read of the ${a.i + 1} bars ending here — tape, session VWAP, compression, tested levels, volume. A description of NOW, not a forecast: the backtest showed forecasts here were coin flips, so this tool no longer makes them.</div>
+      <div class="fline hint">A read of the ${a.i + 1} bars ending here — tape, session VWAP, compression, tested levels, volume. A description of now, not a forecast.</div>
       ${formingHtml}
       <div class="fline">${a.detail}</div>
-      ${isFinite(a.stoch) ? `<div class="fline hint">Stoch RSI ${Math.round(a.stoch)}${a.stoch >= 80 ? " (stretched — continuation needs real volume)" : a.stoch <= 20 ? " (washed out — bounces start here, on volume)" : ""} · ${a.aboveVwap ? "above" : "below"} session VWAP. Context, not a signal — the backtest measured these as coin flips on their own.</div>` : ""}
+      ${isFinite(a.stoch) ? `<div class="fline hint">Stoch RSI ${Math.round(a.stoch)}${a.stoch >= 80 ? " (stretched)" : a.stoch <= 20 ? " (washed out)" : ""} · ${a.aboveVwap ? "above" : "below"} session VWAP. Context, not a signal.</div>` : ""}
       ${a.edgeNotes && a.edgeNotes.length ? `<div class="fline hint">≈ ${a.edgeNotes.join(" · ")} — a read this close to its threshold can flip on the next bar.</div>` : ""}
       <div class="jclose"><button id="readlog" type="button">Log this as a trade →</button></div>
     </div>
@@ -3163,7 +3190,7 @@ try { if (!localStorage.getItem("mrhints")) $("hintbar").hidden = false; } catch
 $("hintx").onclick = () => { $("hintbar").hidden = true; try { localStorage.setItem("mrhints", "1"); } catch(e){} };
 
 /* ============================== trade journal ============================== */
-const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered during squeeze/chop",
+const FAIL_TAGS = ["— pick one —", "followed the plan", "no real setup — chased", "entered during squeeze/chop",
   "fakeout — volume never confirmed", "right idea, too early (theta)", "moved my stop",
   "took profit too early", "thesis just wrong", "news / external"];
 
@@ -3254,10 +3281,16 @@ function jClose(id){
   t.exit = isNaN(exit) ? null : exit;
   t.pnl = !isNaN(pnlOverride) ? pnlOverride
         : (t.dir === "long" ? exit - t.entry : t.entry - exit);
-  t.tag = $("jc-tag-"+id).value;
+  // an unchanged dropdown used to record "followed the plan", quietly turning
+  // every un-reviewed loss into evidence that the plan was the problem
+  const tagVal = $("jc-tag-"+id).value;
+  t.tag = tagVal === FAIL_TAGS[0] ? "" : tagVal;
   t.notes = $("jc-notes-"+id).value.trim();
   t.status = "closed"; t.closedAt = new Date().toISOString();
-  jSave(all); jRender();
+  // if the write fails the trade is gone: say so instead of re-rendering as if
+  // it worked (jSave already puts the reason in the status line)
+  if (!jSave(all)){ alert("Could not save — browser storage is full or blocked. Export your journal before doing anything else."); return; }
+  jRender();
 }
 function jDelete(id){
   if (!confirm("Delete this journal entry? This can't be undone.")) return;
@@ -3303,7 +3336,8 @@ function jRender(){
   const closed = all.filter(t => t.status === "closed" && t.pnl != null);
   const st = $("jstats");
   if (!closed.length){ st.innerHTML = "<h3>Your numbers</h3><div class='hint'>Stats appear once you close trades. The one to watch: win rate when you entered on a confirmed move vs. when you entered without one.</div>"; return; }
-  const wins = closed.filter(t => t.pnl > 0);
+  const wins = closed.filter(t => t.pnl > 0), losses = closed.filter(t => t.pnl < 0),
+        scratches = closed.filter(t => t.pnl === 0);
   // "green light" is a state-era concept (confirmed MOVING in your direction);
   // legacy lean-era records measured something the tool no longer believes in
   const stateEra = t => t.snap && ("state" in t.snap);
@@ -3313,17 +3347,19 @@ function jRender(){
   const wr = g => g.length ? Math.round(100 * g.filter(t => t.pnl > 0).length / g.length) + "% of " + g.length : "—";
   const avg = g => g.length ? (g.reduce((s,t) => s + t.pnl, 0) / g.length) : 0;
   const tagCounts = {};
-  closed.filter(t => t.pnl <= 0 && t.tag && t.tag !== FAIL_TAGS[0]).forEach(t => tagCounts[t.tag] = (tagCounts[t.tag] || 0) + 1);
+  closed.filter(t => t.pnl < 0 && t.tag && t.tag !== FAIL_TAGS[0] && t.tag !== FAIL_TAGS[1])
+        .forEach(t => tagCounts[t.tag] = (tagCounts[t.tag] || 0) + 1);
   const topTag = Object.entries(tagCounts).sort((a,b) => b[1] - a[1])[0];
   st.innerHTML = `<h3>Your numbers</h3>
     <div class="srow"><span>Closed trades</span><b>${closed.length}</b></div>
-    <div class="srow"><span>Win rate</span><b>${Math.round(100*wins.length/closed.length)}%</b></div>
-    <div class="srow"><span>Avg win / avg loss</span><b>+$${fmtPx(avg(wins))} / −$${fmtPx(Math.abs(avg(closed.filter(t => t.pnl <= 0))))}</b></div>
+    <div class="srow"><span>Win rate</span><b>${wins.length + losses.length ? Math.round(100*wins.length/(wins.length+losses.length)) : 0}%${scratches.length ? ` <span class="hint">(${scratches.length} scratch${scratches.length > 1 ? "es" : ""} excluded)</span>` : ""}</b></div>
+    <div class="srow"><span>Avg win / avg loss</span><b>+$${fmtPx(avg(wins))} / −$${fmtPx(Math.abs(avg(losses)))}</b></div>
     <div class="srow"><span>Expectancy per trade</span><b>${avg(closed) >= 0 ? "+" : "−"}$${fmtPx(Math.abs(avg(closed)))}</b></div>
     <div class="srow"><span>Entered on a green light (confirmed move)</span><b>${wr(agreeC)}</b></div>
     <div class="srow"><span>Entered without one</span><b>${wr(againstC)}</b></div>
     ${legacyN ? `<div class="srow"><span class="hint">(${legacyN} older trade${legacyN > 1 ? "s" : ""} from the old scoring system excluded from the green-light split)</span><b></b></div>` : ""}
-    ${topTag ? `<div class="srow"><span>Most common failure</span><b>${esc(topTag[0])} ×${topTag[1]}</b></div>` : ""}`;
+    ${topTag ? `<div class="srow"><span>Most common failure</span><b>${esc(topTag[0])} ×${topTag[1]}</b></div>` : ""}
+    <div class="srow"><span class="hint">P/L is in whatever unit you entered — underlying points if you logged prices, premium if you typed the P/L directly. Mixing the two makes these numbers meaningless, so pick one and stay with it.</span><b></b></div>`;
 }
 
 $("jexport").onclick = e => {
@@ -3367,7 +3403,7 @@ try { jRender(); } catch(e){ /* one broken record must never cost the chart */ }
    forbids forecasts for the same reason the tool makes none. Calls go from
    this browser straight to api.anthropic.com with the user's own key. */
 const ASK_MODEL = "claude-opus-5";
-const ASK_PRICE = { input: 5, output: 25, cacheRead: 0.5 };   // $ per million tokens, list price
+const ASK_PRICE = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };   // $ per million tokens, list price
 const ASK_SYSTEM = `You are the coach inside Momentum Radar, a single-page trading tool used by one retail options trader who trades US indexes (mostly SPY) intraday. Their stated problem: entering positions during consolidation out of boredom with no edge, then bleeding option premium to theta while price chops. The tool exists to stop that.
 
 You receive a JSON snapshot of what the tool has MEASURED from completed bars: the current state (one of MOVING up/down with a volume-confirmation flag, AT A TESTED WALL, COILING, CHOP, QUIET), tested levels, the volume profile, the current move's age against the measured distribution of past runs on this chart, today's path of state changes, alerts fired, the trader's journal, and the last backtest summary. You never receive raw candles.
@@ -3439,11 +3475,37 @@ function askSnapshot(){
   return JSON.stringify(snap);
 }
 
+/* The model answers in markdown, so rendering it as plain text put literal
+   **stars** and dashes on screen. This is a deliberately tiny renderer — bold,
+   code, bullets, paragraphs — over ESCAPED text, so a model answer can never
+   introduce markup of its own. */
+function askRender(el, text){
+  const esc1 = t => esc(String(t));
+  const inline = t => esc1(t)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:)]|$)/g, "$1<i>$2</i>");
+  const out = [];
+  let list = null;
+  for (const raw of String(text || "").split("\n")){
+    const lineTxt = raw.replace(/\s+$/, "");
+    const li = lineTxt.match(/^\s*(?:[-*•]|\d+\.)\s+(.*)$/);
+    if (li){ if (!list){ list = []; } list.push(`<li>${inline(li[1])}</li>`); continue; }
+    if (list){ out.push(`<ul>${list.join("")}</ul>`); list = null; }
+    const hd = lineTxt.match(/^\s*#{1,4}\s+(.*)$/);
+    if (hd){ out.push(`<div class="askh">${inline(hd[1])}</div>`); continue; }
+    if (!lineTxt.trim()) continue;
+    out.push(`<p>${inline(lineTxt)}</p>`);
+  }
+  if (list) out.push(`<ul>${list.join("")}</ul>`);
+  el.innerHTML = out.join("") || "";
+  return el;
+}
 function askAddMsg(kind, text){
   const log = $("asklog");
   const el = document.createElement("div");
   el.className = "askmsg " + kind;
-  el.textContent = text;
+  if (kind === "bot" && text) askRender(el, text); else el.textContent = text;
   log.appendChild(el);
   log.scrollTop = log.scrollHeight;
   return el;
@@ -3457,32 +3519,56 @@ function askErrText(e){
   return (e && e.status ? "HTTP " + e.status + " — " : "") + (e && e.message || "unknown error");
 }
 function askCost(u){
-  const est = (u.input * ASK_PRICE.input + u.output * ASK_PRICE.output + u.cacheRead * ASK_PRICE.cacheRead) / 1e6;
+  // cache WRITES cost more than plain input and were simply missing, so the
+  // first question of every session was billed as if it were nearly free
+  const est = (u.input * ASK_PRICE.input + u.output * ASK_PRICE.output
+             + u.cacheRead * ASK_PRICE.cacheRead + (u.cacheWrite || 0) * ASK_PRICE.cacheWrite) / 1e6;
   let tot = 0; try { tot = +(sessionStorage.getItem("mraskcost") || 0); } catch(e){}
   tot += est;
   try { sessionStorage.setItem("mraskcost", String(tot)); } catch(e){}
-  $("askcost").textContent = `≈ $${est.toFixed(3)} this answer · $${tot.toFixed(2)} this session (${u.input + u.cacheRead} in / ${u.output} out tokens, list price)`;
+  $("askcost").textContent = `≈ $${est.toFixed(3)} this answer · $${tot.toFixed(2)} this session `
+    + `(${u.input + u.cacheRead + (u.cacheWrite || 0)} in / ${u.output} out tokens, list price)`;
 }
 
 async function askClaude(question){
   question = String(question || "").trim();
   if (!question) return;
+  if (S.askBusy) return;                 // one turn at a time keeps the order sane
+  S.askBusy = true;
+  try { await askClaudeInner(question); } finally { S.askBusy = false; }
+}
+async function askClaudeInner(question){
   const key = getAnKey();
   if (!key){
     askAddMsg("err", "No Anthropic API key yet — paste one in ⚙ data (\"get ask key\"). It stays in this browser and is never written into the page address.");
     $("datarow").hidden = false;
     return;
   }
-  const prior = S.askHist.map(m => ({ role: m.role, content: m.text }));
+  /* The API requires strictly alternating user/assistant turns. Clearing the
+     log mid-stream, a reload that caught a half-written turn, or two sends
+     racing could all leave two of a kind next to each other and get the whole
+     conversation rejected. Normalise before sending: drop anything empty, and
+     collapse consecutive same-role turns. */
+  const prior = [];
+  for (const m of S.askHist){
+    const text = String(m && m.text || "").trim();
+    if (!text || (m.role !== "user" && m.role !== "assistant")) continue;
+    const last = prior[prior.length - 1];
+    if (last && last.role === m.role) last.content += "\n\n" + text;
+    else prior.push({ role: m.role, content: text });
+  }
+  if (prior.length && prior[0].role !== "user") prior.shift();
+  if (prior.length && prior[prior.length - 1].role !== "assistant") prior.pop();
   const messages = prior.concat([{ role: "user", content: [
     { type: "text", text: "CURRENT SNAPSHOT (JSON):\n" + askSnapshot() },
     { type: "text", text: question } ] }]);
+  const gen = S.askGen || 0;
   S.askHist.push({ role: "user", text: question }); askPersist();
   askAddMsg("user", question);
   const bot = askAddMsg("bot", ""); bot.classList.add("live");
   $("asksend").disabled = true;
   let text = "", stop = null;
-  const usage = { input: 0, output: 0, cacheRead: 0 };
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   try{
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -3509,10 +3595,12 @@ async function askClaude(question){
     let buf = "";
     const handle = ev => {
       if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta"){
-        text += ev.delta.text; bot.textContent = text; $("asklog").scrollTop = $("asklog").scrollHeight;
+        text += ev.delta.text; bot.textContent = text;   // rendered once at the end
+        $("asklog").scrollTop = $("asklog").scrollHeight;
       } else if (ev.type === "message_start" && ev.message && ev.message.usage){
         usage.input = ev.message.usage.input_tokens || 0;
         usage.cacheRead = ev.message.usage.cache_read_input_tokens || 0;
+        usage.cacheWrite = ev.message.usage.cache_creation_input_tokens || 0;
       } else if (ev.type === "message_delta"){
         if (ev.delta && ev.delta.stop_reason) stop = ev.delta.stop_reason;
         if (ev.usage && ev.usage.output_tokens) usage.output = ev.usage.output_tokens;
@@ -3538,12 +3626,13 @@ async function askClaude(question){
     bot.classList.remove("live");
     if (stop === "refusal") text += (text ? "\n\n" : "") + "(The model declined to answer this one.)";
     if (stop === "max_tokens") text += "\n\n(cut off at the length limit)";
-    bot.textContent = text;
-    S.askHist.push({ role: "assistant", text }); askPersist();
+    askRender(bot, text);
+    if (gen === (S.askGen || 0)){ S.askHist.push({ role: "assistant", text }); askPersist(); }
     askCost(usage);
   }catch(e){
     bot.classList.remove("live");
-    S.askHist.pop(); askPersist();          // a failed turn must not break the user/assistant alternation
+    if (gen === (S.askGen || 0)) S.askHist.pop();
+    askPersist();                           // a failed turn must not break the alternation
     bot.className = "askmsg err";
     bot.textContent = askErrText(e);
   }finally{
@@ -3560,11 +3649,12 @@ $("askq").addEventListener("keydown", e => {
 document.querySelectorAll(".askchip").forEach(b => b.onclick = () => { $("askq").value = ""; askClaude(b.textContent); });
 $("askclear").onclick = e => {
   e.preventDefault();
+  S.askGen = (S.askGen || 0) + 1;        // any turn still streaming stops recording
   S.askHist = []; askPersist(); $("asklog").innerHTML = ""; $("askcost").textContent = "";
   try { sessionStorage.removeItem("mraskcost"); } catch(e2){}
 };
 $("ankey").value = getAnKey();
-$("ankey").addEventListener("change", e => { setAnKey(e.target.value.trim()); });   // NOT writeKeyHash — never in the URL
+$("ankey").addEventListener("change", e => { setAnKey(e.target.value.trim()); });   // never leaves this browser
 
 /* ============================== backtest ============================== */
 /* Replays history through the live state and alert code. Causality: readState
@@ -4100,7 +4190,7 @@ if (asFromLink){ setASec(asFromLink[1]); $("asec").value = asFromLink[1]; }
 // a key-bearing bookmark on a fresh browser: the keys just arrived via the
 // hash, so the settings drawer no longer needs to be open
 $("datarow").hidden = !!(getTdKey() || (getAKey() && getASec()));
-if (getTdKey() || getFhKey()) writeKeyHash();
+clearKeyHash();     // whatever arrived in the link is stored now; don't leave it on screen
 
 start();
 </script>

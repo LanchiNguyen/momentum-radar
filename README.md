@@ -51,12 +51,11 @@ explanations of what the panels are showing.
 
 It uses **your own Anthropic API key** (create one at console.anthropic.com;
 needs prepaid credits, and set a monthly spend cap there). Calls go straight
-from your browser to `api.anthropic.com` — there is no server in between —
-and each answer shows its estimated cost (roughly 1–3¢ at list price). The
-key is stored in this browser only and, unlike the data keys, is **never**
-written into the page address, so a bookmark cannot carry it. Conversation
-history lives in the tab for the session; server-side refusal fallbacks are
-enabled by default.
+from your browser to `api.anthropic.com` — there is no server in between — and
+each answer shows its estimated cost, including cache writes, and a running
+session total. The key is stored in this browser only and is **never** put in
+a link, not even the setup link. Conversation history lives in the tab for the
+session; server-side refusal fallbacks are enabled by default.
 
 ## The design principle
 
@@ -64,56 +63,91 @@ An honest tool for an efficient intraday market cannot predict — the built-in
 backtest proved this tool's own forecast layer scored a coin flip, so it was
 removed. What remains is a **radar, not an oracle**: it detects events
 promptly (alerts), names the current state truthfully, and structures your
-discipline (journal). The state line says one of five things: **MOVING**
-(with or without volume confirmation), **AT A TESTED WALL**, **COILING**,
-**CHOP**, or **QUIET** — descriptions of now, never forecasts.
+discipline (journal). The state line says one of six things: **BREAKING** (the first close out of
+a compression box, on volume — the earliest bar the rule recognises),
+**MOVING** (with or without volume confirmation), **AT A TESTED WALL**,
+**COILING**, **CHOP**, or **QUIET** — descriptions of now, never forecasts.
+
+The tape threshold that separates MOVING from QUIET is **calibrated to the
+chart in front of you**: it is a percentile of that chart's own six-bar moves,
+so it fires on a known slice of bars and the read tells you what that slice is.
+A fixed threshold fired on more than half the bars of a pure random walk, which
+made the biggest word on the screen a description of noise.
 
 ## What it shows
 
 - **The state block** (always visible, biggest thing on the page): the
-  one-glance answer — MOVING, AT A TESTED WALL, COILING, CHOP, or QUIET — with
-  a volume-confirmation flag, one sentence of why, today's path as a dot strip,
-  and four tiles: RVOL against the gate, move age against past runs, the next
-  wall in dollars and ATR, and the session (VWAP side, Stoch RSI, POC).
+  one-glance answer, in the state's colour only when volume backs it, with a
+  confirmation flag, one sentence of why, today's path as a dot strip, and four
+  tiles — **the rule** leg by leg (compression, volume, direction, each with its
+  measured value and a pass mark), the move's age against the measured
+  distribution of finished swings, the next tested wall in dollars and ATR, and
+  how much session is left against the median swing length.
 - **The chart fills the rest of the screen.** Squeeze, volume and Stoch RSI
-  panels are opt-in toggles at the chart's top-right. Read, Alerts and Ask live
-  in a drawer at the bottom; the journal, backtest and learn material live in a
-  separate Review view (bottom-right link), so the live screen never scrolls.
+  panels are opt-in toggles at the chart's top-right. Read, Alerts and Ask sit
+  beside the chart on a wide screen and in a bottom sheet on a narrow one —
+  either way the canvas resizes so the bar you clicked stays visible. The
+  journal, backtest and learn material live in a separate Review view.
+- **Session separators and dates** on the time axis, VWAP breaking at each
+  session reset, level lines carrying their price, and markers for the bar the
+  verdict speaks for and the bar the current move began on. Reading a past bar
+  draws the walls that existed *at that bar*, not today's.
 - **Squeeze panel** (TTM-style): Bollinger Bands compressing inside Keltner
-  Channels. Red dots = coiling, do not enter. Green dot = released, the move
-  is starting. Histogram gives direction.
-- **RVOL**: this bar's volume vs. its 20-bar average — the fakeout filter.
-  Breakouts under 1.0x are usually fake; 1.5x+ is real participation.
-- **Volume profile**: POC and 70% value area over the visible range. Price
-  runs through thin nodes and stalls at fat ones.
+  Channels; amber dots while compression is on, the histogram in the up/down
+  colours for direction. The rule tile says the same thing in words.
+- **RVOL**: this bar's volume against what the symbol normally does **at this
+  time of day** (the same clock slot on prior sessions; the last 20 bars until
+  three prior days exist). For a move already running, the tool compares the
+  volume of the whole move against that baseline, so one quiet bar cannot flip
+  the verdict.
+- **Volume profile**: POC and 70% value area. Price runs through thin nodes and
+  stalls at fat ones.
 - **VWAP + Stoch RSI**: demoted from triggers to filters, which is how they
   actually work.
 
 ## Alerts
 
-Fire on **closed bars only** — no intrabar noise. Enable browser
-notifications and leave the tab in the background:
+Fire on **closed bars only** — no intrabar noise:
 
+- Compression that has been on five bars — said *before* it releases, since
+  that is the setup this whole tool is built around
 - Squeeze release, with direction and volume confirmation
 - Volume spike with range expansion
 - VWAP reclaim / loss on volume (suppressed across the session open)
 - Level rejection: the Nth failed attempt at a tested price
-- Tested break: a close through a level the market probed 3+ times
+- Tested break: a close through a level probed 3+ times, **on volume** —
+  structure without volume is not an entry by this tool's own rule
+- State changes, including the moment an unconfirmed move becomes
+  volume-confirmed
+- A move reaching the median length of finished swings on this chart
+
+Alerts only reach you while the tab is open; a backgrounded tab stops polling
+to protect the free quota, and catches up on the bars that closed meanwhile
+when you return.
 
 If the tab was throttled or the network stalled, alerts catch up over
 the bars that closed meanwhile instead of silently skipping them.
 
 ## Backtest
 
-The "Does it actually work here?" section replays every bar of history
-through the exact scoring and alert code that runs live (no hindsight —
-levels and statistics are recomputed causally as the replay advances),
-then scores each signal by which of ±1 ATR hit first within 20 bars.
-It fetches up to ~5,000 bars for the current symbol/timeframe in one
-API call and reports: whether trading WITH the MOVING state beat the
-baseline, whether volume confirmation earned its keep, whether the
-no-trade states truly carried no direction, and per-alert outcomes —
-every number with its sample size, and small buckets refuse to quote.
+The "Does it actually work here?" section replays every bar of history through
+the exact scoring and alert code that runs live (no hindsight — levels and
+statistics are recomputed causally as the replay advances), then scores each
+entry by which of ±1 ATR hit first within 20 bars. A trade that reaches
+neither by the session close is marked to that close rather than counted a
+loss, because buckets differ in how often that happens and the difference is
+not an edge.
+
+**Every edge carries a 90% band** from resampling whole trading sessions, and a
+row is coloured only when its band excludes zero. Adjacent bars share almost
+all of their outcome window, so the report counts **episodes** — contiguous
+stretches, one trade each — alongside bars. On driftless random walks, tapes
+with no edge in them by construction, it prints no confident verdict at all;
+the previous version told causal stories about them.
+
+It reports the tool's actual claim — all three legs of the rule passing,
+compression without volume, volume without compression — plus the MOVING
+buckets, the no-trade states, and per-alert outcomes, each with its band.
 
 ## Running it
 
@@ -176,10 +210,18 @@ timestamp of the newest bar every source would serve right now, flags the
 stale ones, and offers a one-click reload; it lives in its own panel and
 never touches the signal log.
 
-All keys are also written into the page URL's hash — bookmark the page after
-entering them once and the bookmark carries them to any device. That makes the
-bookmark itself a secret: don't share it, and doubly so with an Alpaca pair in
-it.
+**Keys live in this browser's localStorage and nowhere else.** They used to be
+written into the page URL on every load, which put an Alpaca pair — an *account*
+credential, not a read-only data token — into browser history, synced history
+and every screenshot. To carry them to another device, the ⚙ row has a **copy
+setup link** button that builds that link on demand and asks separately before
+including the Alpaca secret. Opening such a link stores the keys and then wipes
+them from the address bar. The Anthropic key is never in a link at all.
+
+Stock feeds are filtered to **regular hours, 9:30–16:00 ET**. Alpaca serves the
+whole extended session, and pre-market bars would anchor VWAP at 4am, fill the
+volume baseline with overnight prints and make the 9:30 bar read as a
+compression.
 
 **Crypto**: keyless. Binance, Binance.US and Coinbase are tried in order,
 because binance.com refuses US traffic; the source dropdown can pin one.
