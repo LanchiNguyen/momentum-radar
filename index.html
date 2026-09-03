@@ -1160,7 +1160,8 @@ function evaluateAlertsAt(i){
       const dir = ind.mom[i] >= 0 ? "up" : "down";
       const confirmed = rvol >= thr;
       fireAlert("squeeze", i, dir,
-        `Squeeze released ${dir.toUpperCase()} after ${on} bars · RVOL ${rvol.toFixed(1)}${confirmed ? " ✓" : " (weak vol — careful)"} · ${px(c.c)}`);
+        `Squeeze released ${dir.toUpperCase()} after ${on} bars · RVOL ${rvol.toFixed(1)}${confirmed ? " ✓" : " (weak vol — careful)"} · ${px(c.c)}`,
+        { confirmed });
     }
   }
   // 1b) compression that has been on long enough to be the setup, said BEFORE
@@ -1228,12 +1229,12 @@ function evaluateAlertsAt(i){
   }
 }
 
-function fireAlert(type, barIdx, dir, text){
+function fireAlert(type, barIdx, dir, text, meta){
   const key = type + "@" + S.candles[barIdx].t + "@" + S.symbol + S.tf;
   if (S.firedKeys.has(key)) return;
   S.firedKeys.add(key);
   if (S.btCollect){                      // backtest replay: record, don't ring
-    S.btCollect.push({ type: type.split(":")[0], dir, i: barIdx });
+    S.btCollect.push({ type: type.split(":")[0], dir, i: barIdx, meta });
     return;
   }
   S.alerts.unshift({ w: Date.now(), dir, sym: S.symbol, tf: S.tf, text });
@@ -1468,6 +1469,7 @@ function nextPollDelay(){
 }
 function schedulePoll(){
   if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
+  if (S.btRunning) return;                    // the replay owns S.candles
   if (sourceStopped()) return;                // THIS provider is done for today
   if (typeof document !== "undefined" && document.hidden) return;   // resumes on visibilitychange
   S.pollTimer = setTimeout(async () => {
@@ -1483,7 +1485,7 @@ document.addEventListener("visibilitychange", () => {
   if (!S.source || !(S.source.poll || (S.plan && S.plan.factor > 1))) return;
   if (document.hidden){
     if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
-  } else if (!S.pollTimer && !sourceStopped()){
+  } else if (!S.pollTimer && !sourceStopped() && !S.btRunning){
     S.pollIdle = 0;
     S.pollTimer = setTimeout(async () => {
       S.pollTimer = null;
@@ -1555,6 +1557,7 @@ function disconnectTicks(){
    the day — stop entirely) or "error" (transient; back off and retry). */
 async function pollOnce(){
   const src = S.source;
+  if (S.btRunning) return "idle";             // never merge live bars into a replay
   if (!src || !(src.poll || (S.plan && S.plan.factor > 1))) return "idle";
   const gen = S.loadGen;    // a poll that outlives a symbol/timeframe switch
   try{                      // must never merge the OLD symbol's bars into the new chart
@@ -3369,21 +3372,29 @@ $("ankey").addEventListener("change", e => { setAnKey(e.target.value.trim()); })
 /* {r, n}: the outcome AND how many bars it took — for an options trader the
    speed is half the result, because a win that takes 19 bars has been paying
    theta the whole way there. */
+/* Every entry gets a definite outcome. Counting "neither bracket was reached"
+   as a loss looked fair but was not: buckets differ in how often that happens
+   (entries near the close, and low-volatility states, resolve less), so part of
+   every measured edge was a time-of-day artefact rather than direction. An
+   unresolved trade is marked to the last price the trader could actually have
+   taken — the session close, where they are flat anyway. */
 function btOutcomeFull(cs, ind, i, dir){
-  const a = ind.atr[i]; if (!a || i + 1 >= cs.length) return { r:"none", n:null };
-  const e = cs[i].c, end = Math.min(cs.length - 1, i + 20);
-  // stock outcomes stop at the session boundary: this trader is flat by the
-  // close, so an overnight gap "hitting" the bracket is a fill that never
-  // existed for them
+  const a = (ind.refAtr && ind.refAtr[i]) || ind.atr[i];
+  if (!a || i + 1 >= cs.length) return { r:"none", n:null, res:false };
+  const e = cs[i].c;
+  let end = Math.min(cs.length - 1, i + 20);
   const sess = sessionedFeed() ? etDayKey(cs[i].t) : null;
+  if (sess) for (let k = i + 1; k <= end; k++) if (etDayKey(cs[k].t) !== sess){ end = k - 1; break; }
+  if (end <= i) return { r:"none", n:null, res:false };
   for (let k = i + 1; k <= end; k++){
-    if (sess && etDayKey(cs[k].t) !== sess) return { r:"none", n:null };
     const f = dir > 0 ? cs[k].h - e : e - cs[k].l;
     const g = dir > 0 ? e - cs[k].l : cs[k].h - e;
-    if (g >= a) return { r:"loss", n:k-i };    // stop side first (or same bar) = loss
-    if (f >= a) return { r:"win", n:k-i };
+    if (g >= a) return { r:"loss", n:k-i, res:true };   // stop side first (or same bar) = loss
+    if (f >= a) return { r:"win", n:k-i, res:true };
   }
-  return { r:"none", n:null };
+  // never reached either side: mark to the close of the window
+  const pnl = dir > 0 ? cs[end].c - e : e - cs[end].c;
+  return { r: pnl > 0 ? "win" : "loss", n: end - i, res:false };
 }
 function btOutcome(cs, ind, i, dir){ return btOutcomeFull(cs, ind, i, dir).r; }
 
@@ -3427,24 +3438,43 @@ async function runBacktest(){
 
   // swap state in, restore no matter what
   const save = { cs: S.candles, ind: S.ind, levels: S.levels, levelsKey: S.levelsKey,
-                 lastAlertT: S.lastAlertT, fired: S.firedKeys };
+                 levelsAt: S.levelsAt, lastAlertT: S.lastAlertT, fired: S.firedKeys,
+                 runs: S.runs, runsKey: S.runsKey };
+  S.btRunning = true;
+  if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
   S.candles = bars; S.ind = computeIndicators(bars);
   S.firedKeys = new Set(); S.btCollect = [];
   const ind = S.ind, N = bars.length;
   const first = 60, lastBar = N - 21;
 
   let curDir = 0, curAge = 0;   // the replay's own move-age tracker
+  /* Each bucket keeps its results split by ET session. Adjacent bars share
+     almost all of their 20-bar window, so treating them as independent trades
+     overstated certainty by roughly a factor of twenty; resampling whole days
+     is what lets the report put an honest band around every number. */
+  const slot = () => ({ w:0, l:0, unres:0, tw:0, tn:0, ep:0, byDay:new Map() });
   const acc = {
-    base: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
-    move: { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
-    conf: { yes: { w:0, l:0, u:0 }, no: { w:0, l:0, u:0 } },
-    age:  { fresh: { w:0, l:0, u:0 }, late: { w:0, l:0, u:0 } },
-    brk:  { up: { w:0, l:0, u:0 }, dn: { w:0, l:0, u:0 } },
+    base: { up: slot(), dn: slot() },
+    move: { up: slot(), dn: slot() },
+    conf: { yes: slot(), no: slot() },
+    age:  { fresh: slot(), late: slot() },
+    brk:  { up: slot(), dn: slot() },
+    rule: { pass: slot(), novol: slot(), nocomp: slot() },
     veto: {}, signals: {},
+    days: new Set(),
   };
-  const tally = (slot, o) => {
-    if (o.r === "win"){ slot.w++; slot.tw = (slot.tw || 0) + o.n; }
-    else if (o.r === "loss") slot.l++; else slot.u++;
+  const prevIn = new Set();          // which buckets the previous bar was in
+  const nowIn = new Set();
+  const tally = (sl, o, day, key) => {
+    if (o.r === "none") return;
+    if (o.r === "win"){ sl.w++; sl.tw += o.n; } else sl.l++;
+    if (!o.res) sl.unres++;
+    sl.tn += o.n;
+    const d = sl.byDay.get(day) || { w:0, n:0 };
+    d.w += o.r === "win" ? 1 : 0; d.n++; sl.byDay.set(day, d);
+    // an episode is one contiguous stretch in this bucket: the trade the
+    // trader would actually take, and the honest unit to count
+    if (key){ nowIn.add(key); if (!prevIn.has(key)) sl.ep++; }
   };
 
   try{
@@ -3454,13 +3484,12 @@ async function runBacktest(){
         await new Promise(r => setTimeout(r, 0));            // keep the page alive
         if (gen !== S.loadGen) throw new Error("superseded");
       }
-      if (i % 10 === 0){                                      // levels drift slowly
-        S.levels = findLevels(bars, i, ind).sort((a,b) => b.touches - a.touches).slice(0, 6);
-        S.levelsKey = S.symbol + "|" + S.tf;                  // readState trusts the cache by key
-      }
 
+      const day = etDayKey(bars[i].t);
+      acc.days.add(day);
+      nowIn.clear();
       const oUp = btOutcomeFull(bars, ind, i, 1), oDn = btOutcomeFull(bars, ind, i, -1);
-      tally(acc.base.up, oUp); tally(acc.base.dn, oDn);
+      tally(acc.base.up, oUp, day); tally(acc.base.dn, oDn, day);
 
       // run age, maintained incrementally (readState skips run stats in replay)
       const td = tapeAt(bars, ind, i).dir;
@@ -3473,116 +3502,242 @@ async function runBacktest(){
         if (st.state === "breaking"){
           // BREAKING is directional, so scoring it "up first" like a no-trade
           // state would answer a question nobody asked
-          tally(st.dir > 0 ? acc.brk.up : acc.brk.dn, st.dir > 0 ? oUp : oDn);
+          tally(st.dir > 0 ? acc.brk.up : acc.brk.dn, st.dir > 0 ? oUp : oDn, day, "brk" + st.dir);
         } else if (st.state === "moving"){
           const o = st.dir > 0 ? oUp : oDn;
-          tally(st.dir > 0 ? acc.move.up : acc.move.dn, o);
-          tally(st.confirmed ? acc.conf.yes : acc.conf.no, o);
-          if (curAge <= 2) tally(acc.age.fresh, o);
-          else if (curAge >= 4) tally(acc.age.late, o);
+          tally(st.dir > 0 ? acc.move.up : acc.move.dn, o, day, "move" + st.dir);
+          tally(st.confirmed ? acc.conf.yes : acc.conf.no, o, day, st.confirmed ? "cy" : "cn");
+          if (curAge <= 2) tally(acc.age.fresh, o, day, "fresh");
+          else if (curAge >= 4) tally(acc.age.late, o, day, "late");
         } else {
           // no-trade states: score "up first" — near the baseline means the
           // state genuinely carries no direction, which is the claim
-          const slot = acc.veto[st.state] || (acc.veto[st.state] = { w:0, l:0, u:0 });
-          tally(slot, oUp);
+          const sl = acc.veto[st.state] || (acc.veto[st.state] = slot());
+          tally(sl, oUp, day, "veto" + st.state);
+        }
+        /* The tool's one claim, tested directly: compression, then volume, then
+           direction. Nothing here measured that combination before — the
+           confirmed/unconfirmed split was over every drifting bar, whether or
+           not a squeeze had anything to do with it. */
+        const legs = ruleLegs(st, parseFloat($("rvolthr") && $("rvolthr").value) || 1.5);
+        if (legs.d !== 0){
+          const o = legs.d > 0 ? oUp : oDn;
+          if (legs.pass) tally(acc.rule.pass, o, day, "rpass");
+          else if (legs.compOk && !legs.volOk) tally(acc.rule.novol, o, day, "rnovol");
+          else if (legs.volOk && !legs.compOk) tally(acc.rule.nocomp, o, day, "rnocomp");
         }
       }
+      /* The alert engine and the state engine must grade a bar against the same
+         walls. readState has just memoised the causal top-6 for this bar, so
+         hand the alerts that set instead of one refreshed every ten bars —
+         which let a level alert fire on a pivot that was not complete yet. */
+      if (S.histLvl){ S.levels = S.histLvl; S.levelsKey = S.symbol + "|" + S.tf; S.levelsAt = bars[i].t; }
       S.btCollect.length = 0;
       evaluateAlertsAt(i);
       for (const sig of S.btCollect){
         if (sig.dir !== "up" && sig.dir !== "down") continue;
-        const slot = acc.signals[sig.type] || (acc.signals[sig.type] = { w:0, l:0, u:0 });
-        tally(slot, btOutcomeFull(bars, ind, i, sig.dir === "up" ? 1 : -1));
+        // a squeeze release with volume and one without are different events
+        const name = sig.type + (sig.type === "squeeze" && sig.meta ? (sig.meta.confirmed ? ":vol" : ":novol") : "");
+        const sl = acc.signals[name] || (acc.signals[name] = slot());
+        tally(sl, btOutcomeFull(bars, ind, i, sig.dir === "up" ? 1 : -1), day, "sig" + name);
       }
+      prevIn.clear(); for (const k of nowIn) prevIn.add(k);
     }
     renderBacktest(out, acc, N, note);
   }catch(e){
     if (String(e.message) !== "superseded") out.innerHTML = `<div class="empty">Backtest failed: ${esc(e.message)}</div>`;
   }finally{
-    S.btCollect = null;
-    S.candles = save.cs; S.ind = save.ind; S.levels = save.levels; S.levelsKey = save.levelsKey;
-    S.lastAlertT = save.lastAlertT; S.firedKeys = save.fired;
+    S.btCollect = null; S.btRunning = false;
+    // if a symbol or timeframe switch landed while the replay ran, start() owns
+    // S.candles now — restoring the old symbol's bars over it would show the
+    // wrong chart under the new label
+    if (gen === S.loadGen){
+      S.candles = save.cs; S.ind = save.ind; S.levels = save.levels; S.levelsKey = save.levelsKey;
+      S.levelsAt = save.levelsAt; S.lastAlertT = save.lastAlertT; S.firedKeys = save.fired;
+      S.runs = save.runs; S.runsKey = save.runsKey;
+      connectWS(); connectTicks();                            // thaw the live feed
+      draw();
+    }
     prog.textContent = ""; btn.disabled = false;
-    if (gen === S.loadGen){ connectWS(); connectTicks(); }   // thaw the live feed
-    draw();
   }
 }
 
 /* Confirmed/unconfirmed buckets mix up- and down-moves, so their fair baseline
-   is the direction-weighted blend of the two directional baselines — weighted
-   by how many of the bucket's own trades went each way. */
-function confBase(acc){
-  const nUp = acc.move.up.w + acc.move.up.l + acc.move.up.u;
-  const nDn = acc.move.dn.w + acc.move.dn.l + acc.move.dn.u;
-  const n = nUp + nDn;
+   is the direction-weighted blend of the two directional baselines. Its day
+   blocks are blended the same way, so a bootstrap over the pair stays paired. */
+function btTot(sl){ return sl.w + sl.l; }
+function btPct(sl){ const n = btTot(sl); return n ? 100 * sl.w / n : 0; }
+function confBase(acc, bucket){
+  const b = bucket || acc.move.up;
+  const nUp = btTot(acc.move.up), nDn = btTot(acc.move.dn), n = nUp + nDn;
   if (!n) return acc.base.up;
-  const p = sl => { const r = sl.w + sl.l + sl.u; return r ? sl.w / r : 0; };
-  const w = (p(acc.base.up) * nUp + p(acc.base.dn) * nDn) / n;
-  const scale = 1000;
-  return { w: Math.round(w * scale), l: Math.round((1 - w) * scale), u: 0 };
+  const wUp = nUp / n, wDn = nDn / n;
+  const out = { w:0, l:0, unres:0, tw:0, tn:0, ep:0, byDay:new Map() };
+  const days = new Set([...acc.base.up.byDay.keys(), ...acc.base.dn.byDay.keys()]);
+  for (const d of days){
+    const u = acc.base.up.byDay.get(d) || { w:0, n:0 }, v = acc.base.dn.byDay.get(d) || { w:0, n:0 };
+    const nn = u.n * wUp + v.n * wDn, ww = u.w * wUp + v.w * wDn;
+    if (nn > 0) out.byDay.set(d, { w: ww, n: nn });
+  }
+  const pu = btPct(acc.base.up) / 100, pd = btPct(acc.base.dn) / 100;
+  const p = pu * wUp + pd * wDn, scale = 1000;
+  out.w = Math.round(p * scale); out.l = Math.round((1 - p) * scale);
+  return out;
 }
 
+/* The band around an edge. Every threshold in this report used to be an
+   absolute 3 or 5 points, which on a driftless random walk was enough to print
+   a confident causal story — "this stretch mean-reverted", "the age readout is
+   earning its keep" — several times in a row. Resampling whole ET sessions
+   respects the fact that adjacent bars are nearly the same trade, and gives a
+   range that usually contains zero when there is nothing there. */
+function btBand(sl, base, reps){
+  if (!sl || !base) return null;
+  const days = [...sl.byDay.keys()].filter(d => base.byDay.has(d));
+  if (days.length < 5 || btTot(sl) < 30) return null;
+  const es = [];
+  for (let r = 0; r < (reps || 300); r++){
+    let sw = 0, sn = 0, bw = 0, bn = 0;
+    for (let k = 0; k < days.length; k++){
+      const d = days[(Math.random() * days.length) | 0];
+      const a = sl.byDay.get(d), b = base.byDay.get(d);
+      sw += a.w; sn += a.n; bw += b.w; bn += b.n;
+    }
+    if (sn > 0 && bn > 0) es.push(100*sw/sn - 100*bw/bn);
+  }
+  if (es.length < 50) return null;
+  es.sort((a,b) => a - b);
+  const lo = es[Math.floor(0.05 * (es.length-1))], hi = es[Math.floor(0.95 * (es.length-1))];
+  return { lo, hi, days: days.length, clears: lo > 0 || hi < 0 };
+}
+/* Two buckets against each other (fresh vs late, confirmed vs unconfirmed),
+   resampled over the same days so the comparison stays paired. */
+function btBandPair(a, b, reps){
+  if (!a || !b) return null;
+  const days = [...a.byDay.keys()].filter(d => b.byDay.has(d));
+  if (days.length < 5 || btTot(a) < 30 || btTot(b) < 30) return null;
+  const es = [];
+  for (let r = 0; r < (reps || 300); r++){
+    let aw = 0, an = 0, bw = 0, bn = 0;
+    for (let k = 0; k < days.length; k++){
+      const d = days[(Math.random() * days.length) | 0];
+      const x = a.byDay.get(d), y = b.byDay.get(d);
+      aw += x.w; an += x.n; bw += y.w; bn += y.n;
+    }
+    if (an > 0 && bn > 0) es.push(100*aw/an - 100*bw/bn);
+  }
+  if (es.length < 50) return null;
+  es.sort((x,y) => x - y);
+  const lo = es[Math.floor(0.05 * (es.length-1))], hi = es[Math.floor(0.95 * (es.length-1))];
+  const mid = es[Math.floor(0.5 * (es.length-1))];
+  return { lo, hi, mid, days: days.length, clears: lo > 0 || hi < 0 };
+}
+const btCI = b => b ? ` (90% CI ${b.lo >= 0 ? "+" : ""}${Math.round(b.lo)}…${b.hi >= 0 ? "+" : ""}${Math.round(b.hi)})` : "";
+
 /* The fresh-vs-late comparison decides how much weight the "move age" readout
-   deserves ON THIS CHART — and the copy admits it when the answer is "none". */
+   deserves ON THIS CHART — and now says plainly when this history cannot tell. */
 function chaseVerdict(acc){
-  const tot = sl => sl.w + sl.l + sl.u;
-  const pct = sl => { const r = tot(sl); return r ? 100 * sl.w / r : 0; };
   const f = acc.age.fresh, l = acc.age.late;
-  if (tot(f) < 20 || tot(l) < 20)
-    return "Chase test: too few fresh/late samples on this history to judge whether late entries score worse here.";
-  const d = Math.round(pct(f) - pct(l));
-  if (d >= 5) return `Chase test: entering moves LATE scored ${d} points worse than entering fresh on this history — the move-age readout is earning its keep.`;
-  if (d <= -5) return `Chase test: late entries actually scored ${-d} points BETTER on this history (persistent-trend regime) — treat the age readout as context, not a rule.`;
-  return "Chase test: fresh and late entries scored about the same on this history — the age readout is context, not an edge.";
+  const ep = Math.min(f.ep, l.ep);
+  if (btTot(f) < 30 || btTot(l) < 30 || ep < 8)
+    return `Chase test: too few fresh/late episodes on this history (${f.ep} fresh, ${l.ep} late) to judge whether late entries score worse here.`;
+  const b = btBandPair(f, l);
+  const d = Math.round(btPct(f) - btPct(l));
+  if (!b) return `Chase test: fresh ${Math.round(btPct(f))}% vs late ${Math.round(btPct(l))}% (${f.ep}/${l.ep} episodes) — not enough separate sessions to put a band on the difference.`;
+  if (!b.clears)
+    return `Chase test: fresh minus late = ${d >= 0 ? "+" : ""}${d} points${btCI(b)} over ${b.days} sessions — the band contains zero, so this history cannot distinguish the move-age readout from noise.`;
+  return b.mid > 0
+    ? `Chase test: entering fresh beat entering late by ${d} points${btCI(b)} over ${b.days} sessions — the band excludes zero, so the age readout is earning its keep on this chart.`
+    : `Chase test: late entries scored ${-d} points BETTER${btCI(b)} over ${b.days} sessions — the band excludes zero, so on this history age worked the other way. Treat the readout as context.`;
 }
 
 function renderBacktest(out, acc, N, note){
-  const pct = sl => { const r = sl.w + sl.l + sl.u; return r ? Math.round(100 * sl.w / r) : 0; };
-  const tot = sl => sl.w + sl.l + sl.u;
-  const row = (label, sl, base, minN) => {
-    const n = tot(sl);
-    if (n < (minN ?? 20)) return `<tr><td>${label}</td><td class="dim">${n}</td><td class="dim" colspan="3">too few to judge</td></tr>`;
-    const p = pct(sl), b = base == null ? null : pct(base), d = b == null ? null : p - b;
-    const cls = d == null ? "dim" : d >= 3 ? "pos" : d <= -3 ? "neg" : "dim";
-    const spd = sl.w >= 5 && sl.tw
-      ? `wins in ~${Math.round(sl.tw/sl.w)} bars (${Math.round(sl.tw/sl.w * TF_MS[S.tf]/6e4)}m)` : "";
-    const extra = [sl.u ? Math.round(100*sl.u/n) + "% unresolved" : "", spd].filter(Boolean).join(" · ");
-    return `<tr><td>${label}</td><td>${n}</td><td><b>${p}%</b></td>
+  const pct = btPct, tot = btTot;
+  /* A row is only coloured when its 90% band excludes zero. Everything printed
+     here is a hit rate, an episode count and a range — never a story. */
+  const row = (label, sl, base, minEp) => {
+    const n = tot(sl), ep = sl.ep;
+    if (n < 30 || ep < (minEp ?? 8))
+      return `<tr><td>${label}</td><td class="dim">${ep || 0}</td><td class="dim" colspan="3">too few episodes to judge (${n} bars)</td></tr>`;
+    const p = Math.round(pct(sl)), b = base == null ? null : Math.round(pct(base));
+    const d = b == null ? null : p - b;
+    const band = base ? btBand(sl, base) : null;
+    const cls = band && band.clears ? (d >= 0 ? "pos" : "neg") : "dim";
+    const spd = sl.tn && n ? `median-ish ${Math.round(sl.tn/n)} bars to resolve` : "";
+    const extra = [sl.unres ? Math.round(100*sl.unres/n) + "% ran to the close" : "", spd].filter(Boolean).join(" · ");
+    return `<tr><td>${label}</td><td>${ep}<span class="dim"> / ${n}</span></td><td><b>${p}%</b></td>
       <td class="dim">${extra}</td>
-      <td class="${cls}">${d == null ? "—" : (d >= 0 ? "+" : "") + d + " vs base"}</td></tr>`;
+      <td class="${cls}">${d == null ? "—" : (d >= 0 ? "+" : "") + d}${band ? btCI(band) : " (band needs more sessions)"}</td></tr>`;
   };
   const baseUp = acc.base.up, baseDn = acc.base.dn;
-  const eUp = tot(acc.move.up) >= 20 ? pct(acc.move.up) - pct(baseUp) : null;
-  const eDn = tot(acc.move.dn) >= 20 ? pct(acc.move.dn) - pct(baseDn) : null;
-  const edges = [eUp, eDn].filter(x => x !== null);
-  const avgEdge = edges.length ? edges.reduce((a,b)=>a+b,0)/edges.length : null;
+  const days = acc.days ? acc.days.size : 0;
+
+  /* The headline is about the rule the tool actually states — compression, then
+     volume, then direction — and it names what it measured. It used to say
+     "following CONFIRMED moves beat guessing" while averaging every MOVING bar,
+     confirmed or not. */
+  const rp = acc.rule.pass, rpBase = confBase(acc, rp);
+  const rpBand = btBand(rp, rpBase);
   let vCls = "none", vTxt;
-  if (avgEdge === null) vTxt = "Too few MOVING states in this history to judge them — the veto and alert tables below still stand.";
-  else if (avgEdge >= 3) { vCls = "good"; vTxt = `Following confirmed moves beat guessing by ~${Math.round(avgEdge)} points on this sample. Small is what real looks like.`; }
-  else if (avgEdge > -3) vTxt = "MOVING states matched the baseline on this sample — treat them as descriptions, and lean on the alerts, levels and vetoes.";
-  else { vCls = "bad"; vTxt = `MOVING states ran ${Math.round(avgEdge)} points BELOW baseline here — this stretch mean-reverted; chasing moves was the losing side.`; }
+  if (tot(rp) < 30 || rp.ep < 8){
+    vTxt = `The rule fired on ${rp.ep} episode${rp.ep === 1 ? "" : "s"} (${tot(rp)} bars) across ${days} sessions — too few to measure. `
+         + `That is itself worth knowing: on this history the full setup is rare.`;
+  } else {
+    const d = Math.round(pct(rp) - pct(rpBase));
+    if (!rpBand || !rpBand.clears){
+      vTxt = `The rule (compression → volume → direction) hit ${Math.round(pct(rp))}% vs a ${Math.round(pct(rpBase))}% baseline `
+           + `over ${rp.ep} episodes and ${days} sessions: ${d >= 0 ? "+" : ""}${d} points${btCI(rpBand)}. `
+           + `The band contains zero — this history cannot distinguish the rule from guessing.`;
+    } else if (d > 0){
+      vCls = "good";
+      vTxt = `The rule (compression → volume → direction) hit ${Math.round(pct(rp))}% vs a ${Math.round(pct(rpBase))}% baseline: `
+           + `+${d} points${btCI(rpBand)} over ${rp.ep} episodes and ${days} sessions. The band excludes zero on this history.`;
+    } else {
+      vCls = "bad";
+      vTxt = `The rule scored ${d} points BELOW the baseline${btCI(rpBand)} over ${rp.ep} episodes and ${days} sessions, `
+           + `and the band excludes zero — on this stretch the full setup was the losing side.`;
+    }
+  }
 
   const VETO_NAMES = { coiling:"COILING (squeeze on)", chop:"CHOP (barcoding)", wall:"AT A TESTED WALL", quiet:"QUIET" };
   const vetoRows = Object.entries(acc.veto).map(([k, sl]) =>
-    row(VETO_NAMES[k] || k, sl, baseUp, 15)).join("");
-  const SIGNAMES = { squeeze: "Squeeze release", volspike: "Volume spike", vwap: "VWAP cross",
-                     lvlrej: "Level rejection", lvlbreak: "Tested break" };
-  const blended = { w: baseUp.w + baseDn.w, l: baseUp.l + baseDn.l, u: baseUp.u + baseDn.u };
-  const sRows = Object.entries(acc.signals).map(([t, sl]) => row(SIGNAMES[t] || t, sl, blended, 10)).join("");
+    row(VETO_NAMES[k] || k, sl, baseUp, 6)).join("");
+  const SIGNAMES = { "squeeze:vol": "Squeeze release ON VOLUME", "squeeze:novol": "Squeeze release, thin volume",
+                     squeeze: "Squeeze release", volspike: "Volume spike", vwap: "VWAP cross", coil: "Coil at 5 bars",
+                     lvlrej: "Level rejection", lvlbreak: "Tested break", state: "State change", runmed: "Move at median length" };
+  const blended = confBase(acc);
+  const sRows = Object.entries(acc.signals).map(([t, sl]) => row(SIGNAMES[t] || t, sl, blended, 4)).join("");
+  const ruleRows = [
+    row("ALL THREE legs pass (the rule)", acc.rule.pass, confBase(acc, acc.rule.pass), 6),
+    row("compression, but volume failed", acc.rule.novol, confBase(acc, acc.rule.novol), 6),
+    row("volume, but no compression", acc.rule.nocomp, confBase(acc, acc.rule.nocomp), 6),
+    row("BREAKING UP (first bar out of the box)", acc.brk.up, baseUp, 4),
+    row("BREAKING DOWN", acc.brk.dn, baseDn, 4),
+  ].join("");
 
   // a compact, numeric copy for the Ask tab — the same figures, no HTML
   const summarize = (label, sl, base) => {
-    const n = tot(sl);
-    return { label, n, hitRatePct: n ? pct(sl) : null,
-             edgeVsBaselinePts: (n >= 20 && base) ? pct(sl) - pct(base) : null,
-             avgBarsToWin: sl.w >= 5 && sl.tw ? +(sl.tw / sl.w).toFixed(1) : null };
+    const n = tot(sl), b = base ? btBand(sl, base) : null;
+    return { label, bars: n, episodes: sl.ep, hitRatePct: n ? Math.round(pct(sl)) : null,
+             edgeVsBaselinePts: (n >= 30 && base) ? Math.round(pct(sl) - pct(base)) : null,
+             edge90CI: b ? [Math.round(b.lo), Math.round(b.hi)] : null,
+             distinguishableFromNoise: b ? b.clears : null,
+             ranToTheClosePct: n ? Math.round(100*sl.unres/n) : null,
+             avgBarsToResolve: n ? +(sl.tn / n).toFixed(1) : null };
   };
   S.lastBt = {
     ranAtET: etHMS(Date.now()) + " " + etZone(), symbol: S.symbol, timeframe: S.tf, barsTested: N,
     caveat: note || null, verdict: vTxt,
-    outcomeRule: "which of ±1 ATR is hit first within 20 bars, same session only; edge = hit rate minus the baseline of guessing that direction on every bar",
+    outcomeRule: "which of ±1 reference ATR is hit first within 20 bars, same session only; a trade that reaches neither is marked to the session close rather than counted a loss. Edge = hit rate minus the baseline of guessing that direction on every bar. n is reported as EPISODES (contiguous stretches, i.e. one trade) as well as bars.",
     baselineHitRatePct: { alwaysUp: pct(baseUp), alwaysDown: pct(baseDn) },
+    sessionsTested: days,
+    readThisHonestly: "Every edge carries a 90% band from resampling whole ET sessions. A row whose band contains zero is not distinguishable from guessing on this history — say so rather than telling a story about it.",
     rows: [
+      summarize("THE RULE: compression, then volume, then direction", acc.rule.pass, confBase(acc, acc.rule.pass)),
+      summarize("compression released but volume failed the gate", acc.rule.novol, confBase(acc, acc.rule.novol)),
+      summarize("volume but no compression behind it", acc.rule.nocomp, confBase(acc, acc.rule.nocomp)),
+      summarize("BREAKING UP (first bar out of the box, on volume)", acc.brk.up, baseUp),
+      summarize("BREAKING DOWN", acc.brk.dn, baseDn),
       summarize("MOVING UP, traded with it", acc.move.up, baseUp),
       summarize("MOVING DOWN, traded with it", acc.move.dn, baseDn),
       summarize("volume-confirmed moves", acc.conf.yes, confBase(acc)),
@@ -3600,9 +3755,10 @@ function renderBacktest(out, acc, N, note){
       <div class="btverdict ${vCls}">${vTxt}</div>
       <div class="fline hint">${N} bars of ${esc(S.symbol)} ${S.tf} · outcome = which of ±1 ATR hit first within 20 bars · the baseline is what guessing that direction on every bar would have scored. "Wins in ~N bars" is the theta number: a slow win still bleeds premium on the way.</div>
       ${note ? `<div class="fline hint">⚠ ${note}</div>` : ""}
-      <table class="btable"><tr><th>state</th><th>n</th><th>hit rate</th><th></th><th>edge</th></tr>
-        <tr><td class="dim">baseline: always guess up</td><td class="dim">${tot(baseUp)}</td><td class="dim">${pct(baseUp)}%</td><td class="dim"></td><td class="dim">0</td></tr>
-        <tr><td class="dim">baseline: always guess down</td><td class="dim">${tot(baseDn)}</td><td class="dim">${pct(baseDn)}%</td><td class="dim"></td><td class="dim">0</td></tr>
+      <table class="btable"><tr><th>state</th><th>episodes / bars</th><th>hit rate</th><th></th><th>edge vs baseline</th></tr>
+        <tr><td class="dim">baseline: always guess up</td><td class="dim">${tot(baseUp)}</td><td class="dim">${Math.round(pct(baseUp))}%</td><td class="dim"></td><td class="dim">0</td></tr>
+        <tr><td class="dim">baseline: always guess down</td><td class="dim">${tot(baseDn)}</td><td class="dim">${Math.round(pct(baseDn))}%</td><td class="dim"></td><td class="dim">0</td></tr>
+        ${ruleRows}
         ${row("MOVING UP, traded with it", acc.move.up, baseUp)}
         ${row("MOVING DOWN, traded with it", acc.move.dn, baseDn)}
         ${row("· volume-confirmed moves only", acc.conf.yes, confBase(acc))}
@@ -3610,7 +3766,14 @@ function renderBacktest(out, acc, N, note){
         ${row("· entered FRESH (move ≤2 bars old)", acc.age.fresh, confBase(acc))}
         ${row("· entered LATE (move ≥4 bars old)", acc.age.late, confBase(acc))}
       </table>
-      <div class="fline hint">The split that matters: confirmed vs unconfirmed. If confirmed beats unconfirmed here, the RVOL gate is earning its keep.</div>
+      <div class="fline hint">${(() => {
+        const b = btBandPair(acc.conf.yes, acc.conf.no);
+        if (!b) return "Confirmed vs unconfirmed: not enough episodes in both buckets on this history to compare them.";
+        const d = Math.round(btPct(acc.conf.yes) - btPct(acc.conf.no));
+        return b.clears
+          ? `Confirmed minus unconfirmed = ${d >= 0 ? "+" : ""}${d} points${btCI(b)} over ${b.days} sessions — the band excludes zero, so the RVOL gate separates them on this chart.`
+          : `Confirmed minus unconfirmed = ${d >= 0 ? "+" : ""}${d} points${btCI(b)} over ${b.days} sessions — the band contains zero, so this history cannot show the gate separating them.`;
+      })()}</div>
       <div class="fline hint">${chaseVerdict(acc)}</div>
     </div>
     <div class="card"><h3>No-trade states — do they really carry no direction?</h3>
@@ -3619,8 +3782,9 @@ function renderBacktest(out, acc, N, note){
     <div class="card"><h3>Per alert type — with your current toggles/thresholds</h3>
       <table class="btable"><tr><th>alert</th><th>fired</th><th>hit rate</th><th></th><th>edge</th></tr>${sRows || '<tr><td class="dim" colspan="5">no alerts fired on this history</td></tr>'}</table></div>
     <div class="card"><h3>Read this honestly</h3>
-      <div class="fline">One symbol, one stretch of one regime, no commissions or slippage, and outcomes overlap (adjacent bars share most of their 20-bar window) — effective sample sizes are roughly n ÷ 20.</div>
-      <div class="fline">Re-run occasionally; distrust any bucket whose n is small.</div>
+      <div class="fline">One symbol, one stretch of one regime, no commissions or slippage. Adjacent bars share almost all of their 20-bar window, so <b>episodes</b> — contiguous stretches, one trade each — are the honest count, and every edge carries a 90% band from resampling whole sessions (${days} of them here).</div>
+      <div class="fline"><b>A row is only coloured when its band excludes zero.</b> A grey edge means this history cannot tell that bucket apart from guessing, however large the number looks. That is the answer, not a missing one.</div>
+      <div class="fline">A trade that reaches neither ±1 ATR side by the session close is marked to that close, not counted as a loss — buckets differ in how often that happens, and the old rule turned that difference into a fake edge.</div>
     </div>
   </div>`;
 }
