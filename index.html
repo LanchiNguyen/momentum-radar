@@ -517,7 +517,8 @@ const S = {
   forceSource: "",      // "" = auto-probe, otherwise pin to one source id
   pollTimer: null,      // live updates for sources with no stream
   pollIdle: 0,          // consecutive polls that returned nothing new (backoff)
-  quotaOut: null,       // source id whose provider limit we've hit today
+  quotaOut: new Set(),  // source ids whose provider daily limit we hit today
+  quotaDay: "",         // the UTC day that set holds for
   histLvl: null,        // memoized causal level set for one historical read
   histLvlKey: "",
   runs: null,           // memoized run distribution (measureRuns)
@@ -648,7 +649,9 @@ function usageNote(srcId){
 function quotaKind(status, body, srcId){
   const msg = typeof body?.message === "string" ? body.message : "";
   const is429 = status === 429 || (body && (body.code === 429 || body.status === 429));
-  if (!is429 && !/limit|quota/i.test(msg)) return false;
+  // "limit" appears in plenty of unrelated messages ("symbol limit", "limit
+  // order"); only treat it as a quota signal when it is about rate or credits
+  if (!is429 && !/(rate|daily|api|request|credit)s?\s*limit|limit (exceeded|reached)|quota/i.test(msg)) return false;
   if (/minute/i.test(msg)) return "minute";
   if (/day|daily/i.test(msg)) return "day";
   const cap = DAILY_CAP[srcId];
@@ -781,6 +784,22 @@ function usMarketOpen(ms){
   return m >= 570 && m < 960;
 }
 function sessionedFeed(){ return !!(S.source && S.source.needsKey); }
+/* 9:30-16:00 ET, by the bar's OPEN time. Alpaca serves the whole 04:00-20:00
+   extended session, and pre-market bars poison everything anchored on the
+   session: VWAP would start at 4am, the RVOL baseline would average thin
+   overnight prints, 66 near-flat bars read as a squeeze, and the backtest's
+   "flat by the close" rule would resolve trades in after-hours prints. */
+function inSession(t){
+  const p = etParts(t);
+  if (!p || !p.weekday) return true;
+  if (p.weekday === "Sat" || p.weekday === "Sun") return false;
+  const m = (+p.hour)*60 + (+p.minute);
+  return m >= 570 && m < 960;
+}
+function sessionFilter(cs, src){
+  if (!src || !src.needsKey) return cs;
+  return cs.filter(b => inSession(b.t));
+}
 
 function etZone(ms){
   if (ms == null || !isFinite(ms)) ms = Date.now();
@@ -842,8 +861,15 @@ function computeIndicators(cs){
   const bbU = mid.map((m,i)=> m + 2*sd[i]), bbL = mid.map((m,i)=> m - 2*sd[i]);
 
   // Keltner 20 EMA ± 1.5 ATR(20)
-  const tr = close.map((_,i)=> i===0 ? high[0]-low[0] :
-      Math.max(high[i]-low[i], Math.abs(high[i]-close[i-1]), Math.abs(low[i]-close[i-1])));
+  // True range must not reach across the overnight gap: the tape is already
+  // session-clamped because "the gap is not momentum", but ATR fed the gap in
+  // and inflated every ATR-scaled read for the first ~30 bars of a session.
+  const sessioned = sessionedFeed();
+  const tr = close.map((_,i)=> {
+    if (i===0) return high[0]-low[0];
+    if (sessioned && etDayKey(cs[i].t) !== etDayKey(cs[i-1].t)) return high[i]-low[i];
+    return Math.max(high[i]-low[i], Math.abs(high[i]-close[i-1]), Math.abs(low[i]-close[i-1]));
+  });
   const atr = wilder(tr, 20);
   const kcMid = ema(close, 20);
   const kcU = kcMid.map((m,i)=> m + 1.5*atr[i]), kcL = kcMid.map((m,i)=> m - 1.5*atr[i]);
@@ -894,7 +920,9 @@ function computeIndicators(cs){
   // "unconfirmed" purely because of the clock. Compare each bar to the average
   // of the SAME slot on prior days (causal: only days already completed),
   // falling back to the flat average until 3 prior-day samples exist.
-  const vAvgFlat = sma(vol, 20);
+  // the PRIOR 20 bars: a baseline containing the bar it judges damps its own spike
+  const vAvgFlatRaw = sma(vol, 20);
+  const vAvgFlat = vAvgFlatRaw.map((v,i) => i > 0 ? vAvgFlatRaw[i-1] : NaN);
   const vAvgTod = new Array(N).fill(NaN);
   {
     const sums = new Map();                    // slot -> {s, n} from completed days
@@ -1148,7 +1176,9 @@ function sourceOrder(){
   // failure message can say "needs your free API key" instead of vanishing
   const stocks = SOURCES.filter(s => s.needsKey && (s.hasKey() || !looksCrypto(S.symbol)));
   const crypto = SOURCES.filter(s => !s.needsKey);
-  return looksCrypto(S.symbol) ? [...crypto, ...stocks] : [...stocks, ...crypto];
+  const list = looksCrypto(S.symbol) ? [...crypto, ...stocks] : [...stocks, ...crypto];
+  // a provider known to be spent today goes last instead of burning the first call
+  return [...list.filter(s => !quotaStopped(s.id)), ...list.filter(s => quotaStopped(s.id))];
 }
 
 async function loadHistory(gen){
@@ -1170,7 +1200,7 @@ async function loadHistory(gen){
       let body = null; try { body = await res.json(); } catch(e){}
       const qk = quotaKind(res.status, body, src.id);
       if (qk === "day"){
-        S.quotaOut = src.id;
+        quotaMark(src.id);
         tried.push(`${src.label}: daily free limit reached${DAILY_CAP[src.id] ? ` (${DAILY_CAP[src.id]} calls)` : ""} — pick another source`);
         continue;
       }
@@ -1178,6 +1208,7 @@ async function loadHistory(gen){
       if (!res.ok){ tried.push(`${src.label}: HTTP ${res.status}${body && body.message ? " — "+body.message : ""}`); continue; }
       let cs = src.parse(body);
       cs = cs.filter(b => isFinite(b.t) && isFinite(b.o) && isFinite(b.h) && isFinite(b.l) && isFinite(b.c));
+      cs = sessionFilter(cs, src);          // stock feeds are 9:30-16:00 ET only
       if (plan.factor > 1){ cs = resampleTf(cs, TF_MS[S.tf]); if (cs.length > 1) cs = cs.slice(1); }
       if (cs.length < 40 || !isFinite(cs[cs.length-1].c)){ tried.push(`${src.label}: not enough ${S.tf} data for ${sym}`); continue; }
       S.candles = cs;
@@ -1318,7 +1349,7 @@ function nextPollDelay(){
 }
 function schedulePoll(){
   if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
-  if (S.quotaOut) return;                     // the provider is done for today
+  if (sourceStopped()) return;                // THIS provider is done for today
   if (typeof document !== "undefined" && document.hidden) return;   // resumes on visibilitychange
   S.pollTimer = setTimeout(async () => {
     S.pollTimer = null;
@@ -1333,7 +1364,7 @@ document.addEventListener("visibilitychange", () => {
   if (!S.source || !(S.source.poll || (S.plan && S.plan.factor > 1))) return;
   if (document.hidden){
     if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
-  } else if (!S.pollTimer && !S.quotaOut){
+  } else if (!S.pollTimer && !sourceStopped()){
     S.pollIdle = 0;
     S.pollTimer = setTimeout(async () => {
       S.pollTimer = null;
@@ -1365,8 +1396,13 @@ function connectTicks(){
     for (const tr of m.data){
       const px = +tr.p, sz = +(tr.v || 0), tt = +tr.t;
       if (!isFinite(px) || !isFinite(tt)) continue;
+      // Finnhub streams every print 04:00-20:00 ET. On a regular-hours chart an
+      // after-hours trade used to close the 15:55 bar and push 16:00 / 18:30 /
+      // 04:00 bars, firing alerts on each. The REST poll opens each new day.
+      if (sessionedFeed() && !inSession(tt)) continue;
       const last = cs[cs.length-1];
       if (tt < last.t) continue;
+      if (sessionedFeed() && etDayKey(tt) !== etDayKey(last.t)) continue;
       const steps = Math.floor((tt - last.t)/ms);
       if (steps === 0){
         S.tickDir = px > last.c ? 1 : px < last.c ? -1 : S.tickDir;
@@ -1413,8 +1449,8 @@ async function pollOnce(){
     const qk = quotaKind(res.status, body, src.id);
     if (qk === "day") return outOfQuota(src);
     if (qk === "minute"){ S.pollIdle = Math.max(S.pollIdle, 3); return "error"; }  // ≥96s pause, quota intact
-    if (!res.ok) return "error";                // transient — keep the last good chart
-    let fresh = src.parse(body);
+    if (!res.ok) return pollFailed(src, `HTTP ${res.status}${body && body.message ? " — " + body.message : ""}`);
+    let fresh = sessionFilter(src.parse(body), src);
     if (plan.factor > 1) fresh = resampleTf(fresh, TF_MS[S.tf]);
     if (fresh.length > 1) fresh = fresh.slice(1);   // oldest bucket may be missing its early base bars
     if (!fresh.length) return "idle";
@@ -1426,13 +1462,29 @@ async function pollOnce(){
       if (gen === S.loadGen) refresh(false);
       return "new";
     }
-    let closedAny = false;
+    let closedAny = false, corrected = [];
     const prevLastT = cs.length ? cs[cs.length-1].t : 0;
     const prevLastC = cs.length ? cs[cs.length-1].c : NaN;
+    const thrNow = parseFloat($("rvolthr") && $("rvolthr").value) || 1.5;
     for (const b of fresh){
       const last = cs[cs.length-1];
       if (!last){ cs.push({ ...b, closed:false }); continue; }
-      if (b.t < last.t) continue;
+      if (b.t < last.t){
+        // A bar the TICK stream closed carries only the trades that socket
+        // happened to see. The provider's copy is the authority, so replace it
+        // instead of dropping it — otherwise RVOL, the alerts that used it and
+        // every run statistic keep a fraction of the real volume forever.
+        const j = cs.findIndex(x => x.t === b.t);
+        if (j >= 0 && j < cs.length - 1){
+          const old = cs[j];
+          const vJump = !(old.v > 0) ? b.v > 0 : Math.abs(b.v - old.v) / old.v > 0.1;
+          if (vJump || old.c !== b.c){
+            cs[j] = { ...b, closed:true };
+            corrected.push(j);
+          }
+        }
+        continue;
+      }
       if (b.t === last.t){
         if (S.tickLive){
           // ticks own the closing price; the poll only widens the range and
@@ -1444,10 +1496,23 @@ async function pollOnce(){
       else { last.closed = true; closedAny = true; cs.push({ ...b, closed:false }); if (cs.length > 600) cs.shift(); }
     }
     S.lastDataAt = Date.now();
+    S.pollFails = 0;
+    if (corrected.length){
+      // the numbers a corrected bar was judged on have changed: recompute and
+      // re-score it (fireAlert dedupes, so only genuinely new signals appear)
+      S.ind = computeIndicators(cs);
+      S.liveReadT = null; S.liveKey = null; S.runsKey = "";
+      for (const j of corrected){
+        const rv = S.ind.rvol[j];
+        if (isFinite(rv)) evaluateAlertsAt(j);
+      }
+      closedAny = true;
+    }
     const last = cs[cs.length-1];
-    const moved = last.t !== prevLastT || last.c !== prevLastC;
+    const moved = last.t !== prevLastT || last.c !== prevLastC || corrected.length > 0;
     if (moved) S.lastNewData = Date.now();
     refresh(closedAny);
+    closeStaleBar();
     const age = Date.now() - last.t;
     if (S.tickLive) return moved ? "new" : "idle";        // stream status wins
     if (age > 3*TF_MS[S.tf] + 60e3){
@@ -1460,13 +1525,39 @@ async function pollOnce(){
       setStatus(`LIVE · ${src.label} · ${S.resolvedSym} ${S.tf} · $${fmtPx(last.c)} · updated ${etHMS(Date.now())} ${etZone()}${usageNote(src.id)}`, "live");
     }
     return moved ? "new" : "idle";
-  }catch(e){ return "error"; }                 // transient — next round retries
+  }catch(e){ return pollFailed(S.source, e && e.name === "TypeError" ? "blocked or unreachable" : (e && e.message) || "failed"); }
+}
+
+/* One dropped request is nothing; a run of them means the chart is frozen while
+   the status line still says LIVE with a stale timestamp. Say so from the
+   second failure on, and keep retrying underneath. */
+function pollFailed(src, why){
+  S.pollFails = (S.pollFails || 0) + 1;
+  if (S.pollFails >= 2 && S.candles.length){
+    const last = S.candles[S.candles.length-1];
+    setStatus(`⚠ ${src ? src.label : "feed"} — ${S.pollFails} failed updates in a row (${why}). `
+      + `The chart is frozen at ${etHM(last.t)} ${etZone()}. Retrying; open ⚙ and hit Diagnose if it persists.`, "err");
+  }
+  return "error";
 }
 
 /* The provider is spent for the day. Retrying costs nothing but keeps the
    chart looking broken, so stop and say exactly what to do about it. */
+function quotaMark(srcId){
+  const day = new Date().toISOString().slice(0,10);
+  if (S.quotaDay !== day){ S.quotaOut = new Set(); S.quotaDay = day; }
+  S.quotaOut.add(srcId);
+}
+/* Only the capped provider stops. Falling back to another source used to leave
+   the old provider's flag set, so the chart said LIVE and never polled again. */
+function quotaStopped(srcId){
+  const day = new Date().toISOString().slice(0,10);
+  if (S.quotaDay !== day){ S.quotaOut = new Set(); S.quotaDay = day; }
+  return S.quotaOut.has(srcId);
+}
+function sourceStopped(){ return !!(S.source && quotaStopped(S.source.id)); }
 function outOfQuota(src){
-  S.quotaOut = src.id;
+  quotaMark(src.id);
   if (S.pollTimer){ clearTimeout(S.pollTimer); S.pollTimer = null; }
   const cap = DAILY_CAP[src.id];
   setStatus(`${src.label} daily free limit reached${cap ? ` (${cap} calls)` : ""} — the chart above is the last good data. `
@@ -1474,7 +1565,7 @@ function outOfQuota(src){
   return "quota";
 }
 // the one escape hatch from a quota stop that doesn't require knowing the app
-statusEl.addEventListener("click", () => { if (S.quotaOut) start(); });
+statusEl.addEventListener("click", () => { if (sourceStopped()) start(); });
 statusEl.style.cursor = "pointer";
 
 
@@ -1503,8 +1594,10 @@ function layout(){
 
 function refresh(barClosed){
   S.ind = computeIndicators(S.candles);
-  updateLiveState();
+  // levels FIRST: readState trusts the cache at the live edge, so reading the
+  // state before refreshing it graded the newest close against last bar's walls
   updateLevels();
+  updateLiveState();
   if (barClosed) evaluateAlerts();
   draw();
   // "Read current bar" means CURRENT: while following, the panel re-reads the
@@ -1912,7 +2005,9 @@ async function start(){
   const gen = ++S.loadGen;
   disconnectWS();
   S.firedKeys.clear(); S.selT = null; S.lastAlertT = 0;
-  S.quotaOut = null; S.pollIdle = 0;
+  // a manual retry (clicking the quota message) gets one honest attempt at
+  // every provider again; the flags re-set themselves if they are still spent
+  S.quotaOut = new Set(); S.pollIdle = 0;
   S.levels = null; S.levelsKey = null;
   S.liveRead = null; S.liveReadT = null; S.liveKey = null; renderVerdictBar();
   S.stateHist = []; S.followLive = false; renderStateHist();
@@ -1982,7 +2077,7 @@ async function probeSource(src){
     return { host, ok:false, verdict:`HTTP ${res.status}` +
       (res.status === 451 ? " — geo-blocked (this exchange refuses your country)" :
        res.status === 401 || res.status === 403 ? " — the key was rejected (wrong key, or the wrong half of an Alpaca pair)" :
-       res.status === 404 ? ` — no such pair "${sym}" here` : "") };
+       res.status === 404 ? ` — no such pair "${esc(sym)}" here` : "") };
   }catch(e){
     try{
       await fetch(url, { mode:"no-cors", cache:"no-store" });
@@ -2159,7 +2254,7 @@ function readState(i){
   // arrow-key stepping stays cheap), with the same top-6 rule as updateLevels.
   let lastClosed = cs.length - 1; if (!cs[lastClosed].closed && lastClosed > 0) lastClosed--;
   let lvls;
-  if (S.levels && S.levelsKey === S.symbol + "|" + S.tf && i >= lastClosed) lvls = S.levels;
+  if (S.levels && S.levelsKey === S.symbol + "|" + S.tf && S.levelsAt === cs[lastClosed].t && i >= lastClosed) lvls = S.levels;
   else {
     const mk = S.symbol + "|" + S.tf + "|" + i + "|" + cs.length;
     if (S.histLvlKey === mk) lvls = S.histLvl;
@@ -2249,7 +2344,7 @@ function readState(i){
     state = "moving"; dir = tapeDir;
     const confirmed = isFinite(rvol) && rvol >= thr;
     detail = `Price has moved ${dir > 0 ? "UP" : "DOWN"} $${fmtPx(Math.abs(net6))} (${atr > 0 ? (Math.abs(net6)/atr).toFixed(1) : "?"} ATR) over the last ${back} bars (${Math.round(back*TF_MS[S.tf]/6e4)} min) on ${rvTxt}${confirmed ? " — volume confirms" : " — volume does NOT confirm; unbacked moves are the fakeouts that trap you"}.`;
-    return { i, c, atr, state, dir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
+    return { i, c, atr, state, dir, tape: tapeDir, confirmed, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
   } else if (freshSession){
     state = "quiet";
     detail = `Session just opened — only ${back + 1} bar${back ? "s" : ""} so far, the tape is not readable yet. The overnight gap is not momentum. ${rvTxt}.`;
@@ -2257,7 +2352,9 @@ function readState(i){
     state = "quiet";
     detail = `Nothing happening: no thrust, no compression, no level under pressure. ${rvTxt}. This is the tape that eats premium — the alerts are watching so you don't have to.`;
   }
-  return { i, c, atr, state, dir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
+  // `tape` is the raw tape direction even when the state is not MOVING — a
+  // ceiling WALL is price pushing UP into it, and the read has to say so.
+  return { i, c, atr, state, dir, tape: tapeDir, confirmed:false, rvol, aboveVwap, net6, detail, keyLevels:{res, sup}, stalled, wall, lvl, edgeNotes, stoch: ind.stochK[i], run };
 }
 
 const STATE_LABEL = {
@@ -2313,13 +2410,15 @@ function renderVerdictBar(){
       pos === "past typical travel" ? "bad" : "");
   } else t2 = tile("Move age", "—", a.state === "quiet" ? "no move in progress" : a.state === "chop" ? "barcoding, nothing to age" : "no directional move", "dim");
   // 3. the wall in the move's direction (nearest tested level otherwise)
-  const lvl = a.dir > 0 ? a.keyLevels.res : a.dir < 0 ? a.keyLevels.sup
+  const vdir = a.state === "moving" ? a.dir : (a.tape || 0);
+  const lvl = a.state === "wall" ? a.wall
+            : vdir > 0 ? a.keyLevels.res : vdir < 0 ? a.keyLevels.sup
             : (a.keyLevels.res && a.keyLevels.sup
                ? (a.keyLevels.res.price - a.c.c <= a.c.c - a.keyLevels.sup.price ? a.keyLevels.res : a.keyLevels.sup)
                : (a.keyLevels.res || a.keyLevels.sup));
   const t3 = lvl
-    ? tile("Next wall", `$${fmtPx(lvl.price)}`,
-        `${lvl === a.keyLevels.res ? "ceiling" : "floor"} ×${lvl.touches} · $${fmtPx(Math.abs(lvl.price - a.c.c))} away` +
+    ? tile(a.state === "wall" ? "This wall" : "Next wall", `$${fmtPx(lvl.price)}`,
+        `${lvl.price >= a.c.c ? "ceiling" : "floor"} ×${lvl.touches} · $${fmtPx(Math.abs(lvl.price - a.c.c))} away` +
         (a.atr ? ` · ${(Math.abs(lvl.price - a.c.c) / a.atr).toFixed(1)} ATR` : ""),
         a.state === "wall" ? "bad" : "")
     : tile("Next wall", "—", "no tested level nearby", "dim");
@@ -2373,11 +2472,15 @@ function renderRead(i){
   // "how long could this last" — answered with this chart's own measured past,
   // never a forecast. The projection layer that pretended to know was deleted
   // after its backtest scored a coin flip; this card is what survives honestly.
-  const runHtml = (a.run && (a.state === "moving" || a.state === "wall")) ? (() => {
+  // a WALL read has no `dir` (it is not a MOVING state) but it does have a
+  // tape direction, and the whole card — run list, target level, pace — has to
+  // follow it. Reading a.dir here described a ceiling wall as a Down-move.
+  const rdir = a.state === "moving" ? a.dir : (a.tape || 0);
+  const runHtml = (a.run && rdir !== 0 && (a.state === "moving" || a.state === "wall")) ? (() => {
     const r = a.run;
     const mins = n => Math.round(n * TF_MS[S.tf] / 6e4);
     const f1 = x => x.toFixed(1);
-    const dirWord = a.dir > 0 ? "Up" : "Down";
+    const dirWord = rdir > 0 ? "Up" : "Down";
     let statsLine, posLine = "";
     if (r.len && r.trv){
       statsLine = `${dirWord}-runs on this chart (${r.len.n} completed): ` +
@@ -2391,16 +2494,16 @@ function renderRead(i){
     } else {
       statsLine = `Fewer than 8 completed ${dirWord.toLowerCase()}-runs on this chart — not enough history to type them. Load a smaller timeframe for more runs.`;
     }
-    const lvlObj = a.dir > 0 ? a.keyLevels.res : a.keyLevels.sup;
+    const lvlObj = a.state === "wall" ? a.wall : (rdir > 0 ? a.keyLevels.res : a.keyLevels.sup);
     const dist = lvlObj ? Math.abs(lvlObj.price - a.c.c) : null;
     const pace = r.age > 0 ? Math.abs(a.c.c - r.flipPx) / r.age : 0;
     const eta = dist != null && pace > 0.05 * a.atr ? Math.ceil(dist / pace) : null;
-    const lvlName = a.dir > 0 ? "ceiling" : "floor";
+    const lvlName = rdir > 0 ? "ceiling" : "floor";
     const structLine = lvlObj
       ? `Next tested ${lvlName}: $${fmtPx(lvlObj.price)} — $${fmtPx(dist)} away (${a.atr ? f1(dist / a.atr) : "?"} ATR)` +
         (eta ? `. At this move's pace (~$${fmtPx(pace)}/bar) that is ~${eta} bar${eta > 1 ? "s" : ""} (~${mins(eta)} min) — arithmetic, not a forecast: IF the pace holds. Walls end moves; clocks don't.`
              : `. The move's pace is too shallow to give an honest time-to-level.`)
-      : `No tested ${lvlName} ${a.dir > 0 ? "above" : "below"} on this chart — no measured structure to lean a target on.`;
+      : `No tested ${lvlName} ${rdir > 0 ? "above" : "below"} on this chart — no measured structure to lean a target on.`;
     return `<div class="card"><h3>How much is left — measured, not promised</h3>
       <div class="fline">This move: <b>${r.age} bar${r.age > 1 ? "s" : ""} old</b> (${mins(r.age)} min) · traveled <b>${f1(r.travel)} ATR</b> since the flip at $${fmtPx(r.flipPx)} (${etHM(r.flipT)}).</div>
       <div class="fline">${statsLine}</div>
@@ -2419,10 +2522,16 @@ function renderRead(i){
   let revealHtml = "";
   if (i <= cs.length - 11){
     let up = 0, dn = 0;
-    const end2 = Math.min(cs.length-1, i+20);
+    // stop at the session close, exactly like the backtest: a day trader is
+    // flat overnight, so the gap is not an outcome they could have taken
+    let end2 = Math.min(cs.length-1, i+20);
+    if (sessionedFeed()){
+      const d0 = etDayKey(a.c.t);
+      for (let k = i+1; k <= end2; k++) if (etDayKey(cs[k].t) !== d0){ end2 = k-1; break; }
+    }
     for (let k = i+1; k <= end2; k++){ up = Math.max(up, cs[k].h - a.c.c); dn = Math.max(dn, a.c.c - cs[k].l); }
-    revealHtml = `<div class="card"><h3>What actually happened next</h3>
-      <div class="fline"><span>Within ${end2-i} bars:</span><b>&nbsp;+$${fmtPx(up)} up&nbsp;</b> / <b>&nbsp;−$${fmtPx(dn)} down</b></div>
+    revealHtml = end2 <= i ? "" : `<div class="card"><h3>What actually happened next</h3>
+      <div class="fline"><span>Within ${end2-i} bars${sessionedFeed() ? " (to the close)" : ""}:</span><b>&nbsp;+$${fmtPx(up)} up&nbsp;</b> / <b>&nbsp;−$${fmtPx(dn)} down</b></div>
       <div class="fline hint">Click past bars like this to test your read before risking money on the live edge.</div></div>`;
   }
 
@@ -2443,11 +2552,11 @@ function renderRead(i){
   </div>`;
   const btn = $("readlog");
   if (btn) btn.onclick = () => {
-    if (a.state === "moving") $("j-dir").value = a.dir < 0 ? "short" : "long";
+    if (rdir !== 0) $("j-dir").value = rdir < 0 ? "short" : "long";
     $("j-entry").value = (Math.round(a.c.c*100)/100);
     if (a.keyLevels.res && a.keyLevels.sup){
-      $("j-target").value = Math.round((a.dir < 0 ? a.keyLevels.sup.price : a.keyLevels.res.price)*100)/100;
-      $("j-stop").value = Math.round((a.dir < 0 ? a.c.c + a.atr : a.c.c - a.atr)*100)/100;
+      $("j-target").value = Math.round((rdir < 0 ? a.keyLevels.sup.price : a.keyLevels.res.price)*100)/100;
+      $("j-stop").value = Math.round((rdir < 0 ? a.c.c + a.atr : a.c.c - a.atr)*100)/100;
     }
     S.readSnapshot = { i: a.i, t: a.c.t };
     showView("review");                       // the journal lives in the Review view
@@ -2536,6 +2645,14 @@ document.addEventListener("keydown", e => {
 $("stepback").onclick = () => stepBar(-1);
 $("stepfwd").onclick = () => stepBar(1);
 $("databtn").onclick = () => { $("datarow").hidden = !$("datarow").hidden; };
+/* Changing the confirmation gate changed the alerts and the volume panel but
+   not the verdict, which cached `confirmed` from the close. Invalidate and
+   re-read so every number on screen answers to the same threshold. */
+if ($("rvolthr")) $("rvolthr").addEventListener("change", () => {
+  try { localStorage.setItem("mrthr", $("rvolthr").value); } catch(e){}
+  S.liveReadT = null; S.liveKey = null; S.histLvlKey = "";
+  if (S.candles.length && S.ind){ refresh(false); seedStateHist(); }
+});
 try { const pp = JSON.parse(localStorage.getItem("mrpanels") || "null"); if (pp && typeof pp === "object") S.panels = { sqz:!!pp.sqz, vol:!!pp.vol, sto:!!pp.sto }; } catch(e){}
 function renderPanelToggles(){
   document.querySelectorAll(".ptbtn").forEach(b => b.classList.toggle("on", !!S.panels[b.dataset.panel]));
@@ -2556,7 +2673,15 @@ const FAIL_TAGS = ["followed the plan", "no real setup — chased", "entered dur
   "fakeout — volume never confirmed", "right idea, too early (theta)", "moved my stop",
   "took profit too early", "thesis just wrong", "news / external"];
 
-function jLoad(){ try { return JSON.parse(localStorage.getItem("mrjournal") || "[]"); } catch(e){ return []; } }
+function jLoad(){
+  try {
+    const j = JSON.parse(localStorage.getItem("mrjournal") || "[]");
+    // a valid-JSON non-array (a bad sync, a partial write) used to throw inside
+    // jRender at boot and stop the whole app — chart included — from loading
+    if (!Array.isArray(j)) return [];
+    return j.filter(t => t && typeof t.id === "number" && isFinite(+t.entry));
+  } catch(e){ return []; }
+}
 function jSave(t){
   try { localStorage.setItem("mrjournal", JSON.stringify(t)); return true; }
   catch(e){
@@ -2739,7 +2864,7 @@ $("jimport").onclick = e => {
   };
   inp.click();
 };
-jRender();
+try { jRender(); } catch(e){ /* one broken record must never cost the chart */ }
 
 /* ============================== ask ============================== */
 /* A coach over the numbers this tool has measured — never an analyst of raw
@@ -3222,9 +3347,25 @@ function mmss(ms){
   const s = Math.max(0, Math.round(ms/1000));
   return Math.floor(s/60) + ":" + pad2(s%60);
 }
+/* A bar closes when its successor arrives — except the session's last one,
+   which has no successor on a regular-hours feed. Without this the 15:55 bar
+   stays "forming" all evening: it is never read, never scored, never alerted,
+   and the verdict freezes on the 15:50 close. */
+function closeStaleBar(){
+  const cs = S.candles;
+  if (!cs.length || !S.ind) return false;
+  const last = cs[cs.length-1];
+  if (last.closed) return false;
+  const grace = 75e3;                     // providers stamp the final print late
+  if (Date.now() < last.t + TF_MS[S.tf] + grace) return false;
+  last.closed = true;
+  refresh(true);
+  return true;
+}
 function tickClock(){
   const box = $("livebox"), el = $("clock");
   if (!box || !el) return;
+  if (sessionedFeed() && S.candles.length && !usMarketOpen()) closeStaleBar();
   const now = new Date();
   const wall = etHMS(now.getTime()) + " " + etZone();
   const bits = [];
@@ -3279,6 +3420,11 @@ applyTheme((()=>{ try { return localStorage.getItem("theme"); } catch(e){ return
    hash — saving a key puts it in the address bar, so bookmarking the page
    carries the key to any other device. One key works forever; never
    generate a new one. */
+try {
+  const savedThr = localStorage.getItem("mrthr");
+  if (savedThr && $("rvolthr")) $("rvolthr").value = savedThr;
+} catch(e){}
+
 const keyFromLink = location.hash.match(/(?:^|[#&])key=([\w-]+)/);
 if (keyFromLink){ setTdKey(keyFromLink[1]); $("tdkey").value = keyFromLink[1]; }
 const fhFromLink = location.hash.match(/(?:^|[#&])fh=([\w-]+)/);
